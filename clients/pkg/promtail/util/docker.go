@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -15,6 +16,7 @@ var (
 
 
 type DockerGraphDirType string
+type MountType string
 
 const (
 	// lowerdir is diff ignore
@@ -23,6 +25,9 @@ const (
 	GraphUpperDirDir DockerGraphDirType = "UpperDir"
 	// workdir work
 	GraphWorkDirDir DockerGraphDirType = "WorkDir"
+
+	MountTypeBind = "bind"
+	MountTypeVolume = "volume"
 )
 
 type DockerClient struct {
@@ -60,6 +65,20 @@ func(d *DockerClient)Volumes(containerId string)(string,error){
 }
 
 
+func(d *DockerClient)MountsVolumes(containerId string)(string,error){
+	ctx,cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inspect, err := d.client.ContainerInspect(ctx, containerId)
+	if err != nil{
+		return "", err
+	}
+	for _, mountPoint := range inspect.Mounts{
+		if mountPoint.Type == mount.TypeVolume{
+			return mountPoint.Source, nil
+		}
+	}
+	return "", err
+}
 
 // GraphDiff show diff
 func(d *DockerClient)GraphDriverUpperDir(containerId string)(string,error){

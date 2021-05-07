@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	util2 "github.com/grafana/loki/clients/pkg/promtail/util"
-	"github.com/sirupsen/logrus"
 	"os"
 	"strings"
 	"sync"
@@ -126,8 +125,7 @@ func NewFileTargetManager(
 				}
 			}
 		}
-		// debug for template
-		hostname = "minikube"
+
 
 		// Add an additional api-level node filtering, so we only fetch pod metadata for
 		// all the pods from the current node. Without this filtering we will have to
@@ -241,7 +239,6 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 		for _, t := range group.Targets {
 			level.Debug(s.log).Log("msg", "new target", "labels", t)
 
-
 			discoveredLabels := group.Labels.Merge(t)
 			var labelMap = make(map[string]string)
 			for k, v := range discoveredLabels.Clone() {
@@ -283,20 +280,22 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 			containerId, ok := labels[podContainerIdLabel]
 			if ok {
 				// 确认来自k8s
-				diffPath,err := s.docker.GraphDriverUpperDir(string(containerId))
+				mountVolume,err := s.docker.MountsVolumes(string(containerId))
+				//diffPath,err := s.docker.GraphDriverUpperDir(string(containerId))
 				if err != nil{
 					level.Error(s.log).Log("msg", "get pod'volume in hostpath failed ", "err", err.Error())
-
 					goto CONTINUE
 				}
-				volume,err := s.docker.Volumes(string(containerId))
-				if err != nil {
-					logrus.Errorf("pod has no volume config")
-					goto CONTINUE
-				}
-				path = model.LabelValue(diffPath + volume + "/*.log")
+				//volume,err := s.docker.Volumes(string(containerId))
+				//if err != nil {
+				//	logrus.Errorf("pod has no volume config")
+				//	goto CONTINUE
+				//}
+				//path = model.LabelValue(mountVolume + volume + "/*.log")
+				path = model.LabelValue(mountVolume + "/*.log")
 			}
 			CONTINUE:
+
 
 			for k := range labels {
 				if strings.HasPrefix(string(k), "__") {

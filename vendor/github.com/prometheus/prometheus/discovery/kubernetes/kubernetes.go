@@ -261,8 +261,9 @@ func New(l log.Logger, conf *SDConfig) (*Discovery, error) {
 	if conf.APIServer.URL == nil {
 		// Use the Kubernetes provided pod service account
 		// as described in https://kubernetes.io/docs/admin/service-accounts-admin/
-		//kcfg, err = rest.InClusterConfig()
-		kcfg,err = clientcmd.BuildConfigFromFlags("", "/Users/edz/.kube/config")
+		kcfg, err = rest.InClusterConfig()
+		kcfg,err = clientcmd.BuildConfigFromFlags("", "")
+
 		if err != nil {
 			return nil, err
 		}

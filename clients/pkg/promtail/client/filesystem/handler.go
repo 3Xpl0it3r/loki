@@ -28,6 +28,13 @@ type handler struct {
 	once sync.Once
 	wg   sync.WaitGroup
 
+	timeFlag time.Time		// today
+
+	lock sync.RWMutex
+	// path
+	pathDir string
+	fileName string
+
 }
 
 
@@ -41,8 +48,11 @@ func newHandler(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logg
 		logger: log.With(logger, "handler_id", meta.namespace+"-"+meta.controllerName+"-"+meta.instance),
 		entries: make(chan api.Entry),
 		cfg: cfg,
+		timeFlag: time.Now(),
 	}
 	absPath := path.Join(cfg.Path, meta.RelativePath())
+	h.pathDir = absPath
+	h.fileName = meta.FileName()
 	err := createDirectoryIfNotExisted(absPath)
 	if err != nil{
 		level.Error(h.logger).Log("create directory" + "/" + meta.RelativePath(), "msg", err.Error())
@@ -94,12 +104,22 @@ func (h *handler)run(){
 
 		case <-maxWaitCheck.C:
 			// Send all batches whose max wait time has been reached
+			// need rollback log
 			h.flush()
 		}
 	}
 }
 
+func (h *handler)updateFileConcur(){
+
+}
+
 func (h *handler)flush(){
+	// 刷新数据之前先检测是否需要备份文件
+	if err := h.flushFilePointer(); err != nil{
+		level.Error(h.logger).Log("msg", "backup and update file pointer failed", "err", err.Error())
+		return
+	}
 	// 将数据刷新到磁盘，写入到文件里面
 	_,err := h.fp.Write(h.buf.Bytes())
 	if err != nil{
@@ -157,3 +177,38 @@ func generateFileHandler(filename string)(*os.File, error){
 	}
 	return fp, nil
 }
+
+
+// 根据当前的时间戳判断是否需要更新文件
+func (h *handler)flushFilePointer()error{
+	cur := time.Now()	// 获取当前时间
+	year,month,day := h.timeFlag.Date() 	//获取上次一次更新的timeflag
+	future := time.Date(year, month, day, 23,59,59, 59,cur.Location())
+	// 如果当前时间小于timeflage日期的凌晨，==》还处于当天，则不更新文件句柄
+	if cur.UnixNano() <= future.UnixNano(){
+		return nil
+	}
+	// update time flag
+	// g更新文件句柄
+	h.timeFlag = time.Date(year, month, day+1, 0, 0, 0,0, cur.Location())
+	//获取备份文件的名称
+	fileBackPostfix := cur.Format("2006-01-02")
+	h.lock.Lock()
+	defer h.lock.Unlock()
+	h.fp.Close()	// 关闭关闭文件句柄
+	originName := path.Join(h.pathDir, h.fileName)
+	newFileName := path.Join(h.pathDir, h.fileName + "-" +fileBackPostfix)
+	e := os.Rename(originName, newFileName)
+	if e != nil{
+		return e
+	}
+	// 重新生成句柄
+	fp,err := generateFileHandler(path.Join(h.pathDir, h.fileName))
+	if err != nil{
+		return err
+	}
+	h.fp = fp
+	return nil
+}
+
+
