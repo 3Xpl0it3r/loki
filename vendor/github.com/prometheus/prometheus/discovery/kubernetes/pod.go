@@ -94,6 +94,7 @@ func (p *Pod) Run(ctx context.Context, ch chan<- []*targetgroup.Group) {
 		return
 	}
 
+
 	go func() {
 		for p.process(ctx, ch) {
 		}
@@ -105,6 +106,7 @@ func (p *Pod) Run(ctx context.Context, ch chan<- []*targetgroup.Group) {
 
 func (p *Pod) process(ctx context.Context, ch chan<- []*targetgroup.Group) bool {
 	keyObj, quit := p.queue.Get()
+
 	if quit {
 		return false
 	}

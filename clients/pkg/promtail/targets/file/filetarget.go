@@ -208,6 +208,7 @@ func (t *FileTarget) sync() error {
 			matches[i] = path
 		}
 	}
+	
 
 	// Record the size of all the files matched by the Glob pattern.
 	t.reportSize(matches)

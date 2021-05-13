@@ -16,7 +16,6 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"k8s.io/client-go/tools/clientcmd"
 	"reflect"
 	"strings"
 	"sync"
@@ -262,8 +261,7 @@ func New(l log.Logger, conf *SDConfig) (*Discovery, error) {
 		// Use the Kubernetes provided pod service account
 		// as described in https://kubernetes.io/docs/admin/service-accounts-admin/
 		kcfg, err = rest.InClusterConfig()
-		kcfg,err = clientcmd.BuildConfigFromFlags("", "")
-
+		//kcfg,err = clientcmd.BuildConfigFromFlags("", "/Users/edz/.kube/config")
 		if err != nil {
 			return nil, err
 		}

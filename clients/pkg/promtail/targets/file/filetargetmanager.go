@@ -234,11 +234,9 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 
 	targets := map[string]struct{}{}
 	dropped := []target.Target{}
-
 	for _, group := range groups {
 		for _, t := range group.Targets {
 			level.Debug(s.log).Log("msg", "new target", "labels", t)
-
 			discoveredLabels := group.Labels.Merge(t)
 			var labelMap = make(map[string]string)
 			for k, v := range discoveredLabels.Clone() {
@@ -280,19 +278,30 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 			containerId, ok := labels[podContainerIdLabel]
 			if ok {
 				// 确认来自k8s
-				mountVolume,err := s.docker.MountsVolumes(string(containerId))
-				//diffPath,err := s.docker.GraphDriverUpperDir(string(containerId))
-				if err != nil{
-					level.Error(s.log).Log("msg", "get pod'volume in hostpath failed ", "err", err.Error())
+				mountVolume,errGetMV := s.docker.MountsVolumes(string(containerId))
+
+				if errGetMV != nil {
+					level.Error(s.log).Log("msg", "get pod'volume in hostpath failed ", "err", errGetMV.Error())
 					goto CONTINUE
 				}
-				//volume,err := s.docker.Volumes(string(containerId))
-				//if err != nil {
-				//	logrus.Errorf("pod has no volume config")
-				//	goto CONTINUE
-				//}
-				//path = model.LabelValue(mountVolume + volume + "/*.log")
-				path = model.LabelValue(mountVolume + "/*.log")
+				diffPath,errGetMerge := s.docker.GraphDriverUpperDir(string(containerId))
+				if errGetMerge != nil{
+					level.Error(s.log).Log("msg", "get merge path in host failed", "err", errGetMerge.Error())
+					if mountVolume != ""{
+						path = model.LabelValue(mountVolume + "/*.log")
+					}
+					goto CONTINUE
+				}
+				// mountVolume /root/logs/app_name/*.log
+				// diffpath xxx/root/log/*.log
+				if mountVolume != "" && diffPath != ""{
+					path = model.LabelValue("{" + mountVolume + "/*.log," + diffPath + "/root/logs/*.log" + "}")
+				} else if mountVolume != ""{
+					path = model.LabelValue(mountVolume + "/*.log")
+				} else {
+					path = model.LabelValue(diffPath + "/root/logs/*.log")
+				}
+
 			}
 			CONTINUE:
 
@@ -320,7 +329,6 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 				s.metrics.failedTargets.WithLabelValues("error").Inc()
 				continue
 			}
-
 			s.metrics.targetsActive.Add(1.)
 			s.targets[key] = t
 		}
