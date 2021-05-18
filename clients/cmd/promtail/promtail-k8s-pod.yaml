@@ -7,9 +7,7 @@ positions:
 
 clients:
   - file_system_config:
-      path: /tmp/testlog
-
-
+      path: /data/
 
 scrape_configs:
 

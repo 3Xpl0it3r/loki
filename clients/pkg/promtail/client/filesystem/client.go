@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"context"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/grafana/loki/clients/pkg/promtail/api"
@@ -31,9 +32,10 @@ type metadata struct {
 	controllerName string
 	instance string
 	fileName string
+	originFilename string
 }
 func(m metadata)Identifier()string{
-	return m.instance+"-"+m.fileName
+	return m.instance+"-" + m.originFilename
 }
 func(m metadata)FileName()string{
 	return m.fileName
@@ -47,7 +49,7 @@ type Handler interface {
 	// 推出关闭，清理资源
 	close()
 	//  开始运行handler，每个handler都打开一个文件，写文件
-	run()
+	run(ctx context.Context)
 	// 从client接收资源
 	Chan()chan <- api.Entry
 }
@@ -61,7 +63,7 @@ type client struct {
 	// 日志记录模块
 	logger log.Logger
 
-	wg sync.WaitGroup
+	stopFn context.CancelFunc
 	entries chan api.Entry	// 接收来自client的entry
 	once sync.Once
 }
@@ -72,48 +74,49 @@ func NewFileSystemClient(reg prometheus.Registerer, cfg FileClientConfig, logger
 		cfg:        cfg,
 		reg:        reg,
 		logger:     log.With(logger, "client_type", "filesystem"),
-		wg:         sync.WaitGroup{},
 		entries:    make(chan api.Entry),
 		once:       sync.Once{},
 		fpHandlers: make(map[string]Handler),
 	}
-	client.wg.Add(1)
-	go client.run(reg, cfg, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	client.stopFn = cancel
+	go client.run(ctx,reg, cfg, logger)
 	return client, nil
 }
 
+
 // run function dispatch entry to all relative file handler
-func(c *client)run(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger){
-	defer c.wg.Done()
-
+func(c *client)run(ctx context.Context,reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger){
 	for {
-		e, ok := <- c.entries
-		if !ok {
-			continue
-		}
-
-		metadata,err := generateMetadata(&e)
-		if err != nil{
-			level.Error(c.logger).Log("msg", "get metadata failed", "err", err.Error())
-			continue
-		}
-
-		// 检测对应的handler是否存在，不存在则创建一个新的handler
-		handler, ok := c.fpHandlers[metadata.Identifier()]
-		if !ok {
-
-			handler,err = newHandler(reg, cfg, logger, metadata)
-			if err != nil{
-				level.Error(c.logger).Log("msg", "generate newhandler failed", "err", err.Error())
+		select {
+		case e, ok := <- c.entries:
+			if !ok {
 				continue
 			}
-			c.fpHandlers[metadata.Identifier()] = handler
-			level.Debug(c.logger).Log("msg", "register handler successfully", "id", metadata.instance)
+			metadata,err := generateMetadata(&e)
+			if err != nil{
+				level.Error(c.logger).Log("msg", "get metadata failed", "err", err.Error())
+				continue
+			}
+
+			// 检测对应的handler是否存在，不存在则创建一个新的handler
+			handler, ok := c.fpHandlers[metadata.Identifier()]
+			if !ok {
+				handler,err = newHandler(reg, cfg, logger, metadata)
+				if err != nil{
+					level.Error(c.logger).Log("msg", "generate newhandler failed", "err", err.Error())
+					continue
+				}
+				c.fpHandlers[metadata.Identifier()] = handler
+				level.Debug(c.logger).Log("msg", "register handler successfully", "id", metadata.instance)
+			}
+			if handler == nil{
+				continue
+			}
+			handler.Chan() <- e
+		case <-ctx.Done():
+			break
 		}
-		if handler == nil{
-			continue
-		}
-		handler.Chan() <- e
 	}
 }
 // 接收数据
@@ -122,13 +125,13 @@ func (c *client) Chan() chan<- api.Entry {
 }
 // 暂停
 func (c *client) Stop() {
+	c.stopFn()
 	c.once.Do(func() {
 		close(c.entries)
 		for _, handler := range c.fpHandlers{
 			handler.close()
 		}
 	})
-	c.wg.Wait()
 }
 
 // 立即停止
@@ -143,6 +146,7 @@ func generateMetadata(entry *api.Entry)(metadata, error){
 		instance string
 		controllerName string
 		fileName string
+		originFileName string
 	)
 	if value,ok := entry.Labels[NamespaceLabel]; ok {
 		namespace = string(value)
@@ -160,6 +164,7 @@ func generateMetadata(entry *api.Entry)(metadata, error){
 		instance = defaultInstanceName
 	}
 	if value, ok := entry.Labels[model.LabelName("filename")]; ok {
+		originFileName = string(value)
 		fileName = getFileBaseName(string(value))
 	} else {
 		return metadata{}, errors.New("path label must be existed")
@@ -169,6 +174,7 @@ func generateMetadata(entry *api.Entry)(metadata, error){
 		controllerName: controllerName,
 		instance:       instance,
 		fileName: fileName,
+		originFilename: originFileName,
 	}, nil
 }
 

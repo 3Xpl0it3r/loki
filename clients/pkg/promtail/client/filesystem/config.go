@@ -10,7 +10,7 @@ import (
 
 const (
 	BatchWait      = 1 * time.Second
-	BatchSize  int = 1024 * 1024
+	BatchSize  int = 1024 * 100
 	Timeout        = 10 * time.Second
 )
 

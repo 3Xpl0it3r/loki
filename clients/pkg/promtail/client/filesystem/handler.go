@@ -2,10 +2,12 @@ package filesystem
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -26,23 +28,22 @@ type handler struct {
 	logger log.Logger 			//记录日志
 	cfg FileClientConfig		// 客户端配置文件
 	once sync.Once
-	wg   sync.WaitGroup
+	cancel context.CancelFunc
 
 	timeFlag time.Time		// today
-
 	lock sync.RWMutex
 	// path
 	pathDir string
 	fileName string
 
+
+	retry int32
+
 }
-
-
 
 func newHandler(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger, meta metadata)(Handler,error){
 	h := &handler{
 		once:       sync.Once{},
-		wg:         sync.WaitGroup{},
 		buf :bytes.NewBuffer([]byte("")),
 		metadata: meta,
 		logger: log.With(logger, "handler_id", meta.namespace+"-"+meta.controllerName+"-"+meta.instance),
@@ -50,28 +51,28 @@ func newHandler(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logg
 		cfg: cfg,
 		timeFlag: time.Now(),
 	}
-	absPath := path.Join(cfg.Path, meta.RelativePath())
-	h.pathDir = absPath
+
+	h.pathDir = path.Join(cfg.Path, meta.RelativePath())
 	h.fileName = meta.FileName()
-	err := createDirectoryIfNotExisted(absPath)
+	err := createDirectoryIfNotExisted(h.pathDir)
 	if err != nil{
 		level.Error(h.logger).Log("create directory" + "/" + meta.RelativePath(), "msg", err.Error())
 		return nil, err
 	}
 	// 检测文件是否存在，不存在则创建新的
-	filename := path.Join(absPath, meta.FileName())
-	fp ,err := generateFileHandler(filename)
-	if err != nil{
+	//filename := path.Join(absPath, meta.FileName())
+	if err := h.reOpenFile(); err != nil{
+		level.Error(h.logger).Log("msg","generate file " + path.Join(h.pathDir, h.fileName),"err", err.Error())
 		h.logger.Log("cretate file pointee")
 		return nil, errors.New(fmt.Sprintf("generate file failed, err: %s",err.Error()))
 	}
-	h.fp = fp
-	h.wg.Add(1)
-	go h.run()
+	ctx,cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	go h.run(ctx)
 	return h, nil
 }
 
-func (h *handler)run(){
+func (h *handler)run(ctx context.Context){
 	level.Debug(h.logger).Log("msg", "begin run handler")
 	minWaitCheckFrequency := 10 * time.Millisecond
 	maxWaitCheckFrequency := h.cfg.BatchWait/ 10
@@ -84,8 +85,7 @@ func (h *handler)run(){
 	defer func() {
 		maxWaitCheck.Stop()
 		// 推出时候将剩余的数据一次性的同步到磁盘
-		h.flush()
-		h.wg.Done()
+		_ = h.flush()
 	}()
 
 	for {
@@ -97,7 +97,13 @@ func (h *handler)run(){
 				return
 			}
 			if h.buf.Len() > h.cfg.BatchSize{
-				h.flush()
+				if err := h.flush(); err != nil{
+					if err := h.reOpenFile(); err != nil && h.retry < 10{
+						atomic.AddInt32(&h.retry, 1)
+					} else {
+						goto EXIST
+					}
+				}
 				continue
 			}
 			h.buf.Write([]byte(e.Line + "\n"))
@@ -105,33 +111,37 @@ func (h *handler)run(){
 		case <-maxWaitCheck.C:
 			// Send all batches whose max wait time has been reached
 			// need rollback log
-			h.flush()
+			_ = h.flush()
+		case <- ctx.Done():
+			break
 		}
 	}
+	EXIST:
+	h.logger.Log("msg","handler existed", "file", h.fileName)
+
 }
 
-func (h *handler)updateFileConcur(){
 
-}
-
-func (h *handler)flush(){
+func (h *handler)flush() error{
 	// 刷新数据之前先检测是否需要备份文件
 	if err := h.flushFilePointer(); err != nil{
 		level.Error(h.logger).Log("msg", "backup and update file pointer failed", "err", err.Error())
-		return
+		return err
 	}
 	// 将数据刷新到磁盘，写入到文件里面
+
 	_,err := h.fp.Write(h.buf.Bytes())
 	if err != nil{
-		level.Error(h.logger).Log("msg", "flush stream to disk failed", "err", err.Error())
-		return
+		level.Error(h.logger).Log("msg", "flush stream to disk failed" + h.fileName, "err", err.Error())
+		return err
 	}
 	err = h.fp.Sync()
 	if err != nil{
 		level.Error(h.logger).Log("msg", "sync file to disk failed", "err", err.Error())
-		return
+		return err
 	}
 	h.buf.Reset()
+	return nil
 }
 
 func (h *handler) Chan() chan<- api.Entry {
@@ -142,13 +152,13 @@ func (h *handler) Chan() chan<- api.Entry {
 // close shutdown handler
 func (h *handler) close() {
 	close(h.entries)
+	h.cancel()
 	if h.fp != nil{
 		err := h.fp.Close()
 		if err != nil{
 			level.Error(h.logger).Log("msg", "close handler , close file description failed", "err", err)
 		}
 	}
-	h.wg.Wait()
 }
 
 
@@ -162,22 +172,39 @@ func createDirectoryIfNotExisted(dir string)error{
 	return nil
 }
 
+
+
 func generateFileHandler(filename string)(*os.File, error){
 	// 检测文件是否存在，不存在则创建新的文件句柄
 	var fp *os.File
 	_,err := os.Stat(filename)
 	if err != nil{
 		if os.IsNotExist(err){
-			fp,err = os.OpenFile(filename, os.O_RDWR|os.O_CREATE, 0644)
+			fp,err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			if err != nil{
-			} else {
-
+				return nil, err
 			}
 		}
+		return nil, err
 	}
 	return fp, nil
 }
 
+
+
+func(h *handler)reOpenFile()(err error){
+	if h.fp != nil{
+		if err =h.fp.Close(); err != nil{
+			return err
+		}
+	}
+	fp,err := os.OpenFile(path.Join(h.pathDir, h.fileName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil{
+		return err
+	}
+	h.fp = fp
+	return nil
+}
 
 // 根据当前的时间戳判断是否需要更新文件
 func (h *handler)flushFilePointer()error{
@@ -205,6 +232,7 @@ func (h *handler)flushFilePointer()error{
 	// 重新生成句柄
 	fp,err := generateFileHandler(path.Join(h.pathDir, h.fileName))
 	if err != nil{
+		if fp != nil{fp.Close()}
 		return err
 	}
 	h.fp = fp
