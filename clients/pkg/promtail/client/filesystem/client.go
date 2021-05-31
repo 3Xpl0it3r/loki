@@ -16,31 +16,32 @@ import (
 // const label is used for mark directory and filename
 const (
 	// client file is only support k8s
-	NamespaceLabel model.LabelName = "namespace"
+	NamespaceLabel      model.LabelName = "namespace"
 	ControllerNameLabel model.LabelName = "controller_name"
-	InstanceLabel model.LabelName = "instance"
+	InstanceLabel       model.LabelName = "instance"
 
-	defaultNamespace  = "default_namespace"
+	defaultNamespace      = "default_namespace"
 	defaultControllerName = "default_controller"
-	defaultInstanceName  = "default_instance"
-
+	defaultInstanceName   = "default_instance"
 )
+
 
 // metadata 写文件所需要的元数据，group/service/app 拼接目录
 type metadata struct {
-	namespace string
+	namespace      string
 	controllerName string
-	instance string
-	fileName string
+	instance       string
+	fileName       string
 	originFilename string
 }
-func(m metadata)Identifier()string{
-	return m.instance+"-" + m.originFilename
+
+func (m metadata) Identifier() string {
+	return m.instance + "-" + m.originFilename
 }
-func(m metadata)FileName()string{
+func (m metadata) FileName() string {
 	return m.fileName
 }
-func(m metadata)RelativePath()string{
+func (m metadata) RelativePath() string {
 	return m.namespace + "/" + m.controllerName + "/" + m.instance
 }
 
@@ -51,25 +52,24 @@ type Handler interface {
 	//  开始运行handler，每个handler都打开一个文件，写文件
 	run(ctx context.Context)
 	// 从client接收资源
-	Chan()chan <- api.Entry
+	Chan() chan<- api.Entry
 }
 
 // client 描述客户端所需要的信息
 type client struct {
 	fpHandlers map[string]Handler
-	cfg FileClientConfig
+	cfg        FileClientConfig
 	// 增加prometheus的监控
 	reg prometheus.Registerer
 	// 日志记录模块
 	logger log.Logger
 
-	stopFn context.CancelFunc
-	entries chan api.Entry	// 接收来自client的entry
-	once sync.Once
+	stopFn  context.CancelFunc
+	entries chan api.Entry // 接收来自client的entry
+	once    sync.Once
 }
 
-
-func NewFileSystemClient(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger)(*client,error){
+func NewFileSystemClient(reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger) (*client, error) {
 	client := &client{
 		cfg:        cfg,
 		reg:        reg,
@@ -80,21 +80,20 @@ func NewFileSystemClient(reg prometheus.Registerer, cfg FileClientConfig, logger
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	client.stopFn = cancel
-	go client.run(ctx,reg, cfg, logger)
+	go client.run(ctx, reg, cfg, logger)
 	return client, nil
 }
 
-
 // run function dispatch entry to all relative file handler
-func(c *client)run(ctx context.Context,reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger){
+func (c *client) run(ctx context.Context, reg prometheus.Registerer, cfg FileClientConfig, logger log.Logger) {
 	for {
 		select {
-		case e, ok := <- c.entries:
+		case e, ok := <-c.entries:
 			if !ok {
 				continue
 			}
-			metadata,err := generateMetadata(&e)
-			if err != nil{
+			metadata, err := generateMetadata(&e)
+			if err != nil {
 				level.Error(c.logger).Log("msg", "get metadata failed", "err", err.Error())
 				continue
 			}
@@ -102,15 +101,15 @@ func(c *client)run(ctx context.Context,reg prometheus.Registerer, cfg FileClient
 			// 检测对应的handler是否存在，不存在则创建一个新的handler
 			handler, ok := c.fpHandlers[metadata.Identifier()]
 			if !ok {
-				handler,err = newHandler(reg, cfg, logger, metadata)
-				if err != nil{
+				handler, err = newHandler(reg, cfg, logger, metadata)
+				if err != nil {
 					level.Error(c.logger).Log("msg", "generate newhandler failed", "err", err.Error())
 					continue
 				}
 				c.fpHandlers[metadata.Identifier()] = handler
 				level.Debug(c.logger).Log("msg", "register handler successfully", "id", metadata.instance)
 			}
-			if handler == nil{
+			if handler == nil {
 				continue
 			}
 			handler.Chan() <- e
@@ -119,16 +118,18 @@ func(c *client)run(ctx context.Context,reg prometheus.Registerer, cfg FileClient
 		}
 	}
 }
+
 // 接收数据
 func (c *client) Chan() chan<- api.Entry {
 	return c.entries
 }
+
 // 暂停
 func (c *client) Stop() {
 	c.stopFn()
 	c.once.Do(func() {
 		close(c.entries)
-		for _, handler := range c.fpHandlers{
+		for _, handler := range c.fpHandlers {
 			handler.close()
 		}
 	})
@@ -140,15 +141,15 @@ func (c *client) StopNow() {
 }
 
 //根据label生成元数据
-func generateMetadata(entry *api.Entry)(metadata, error){
+func generateMetadata(entry *api.Entry) (metadata, error) {
 	var (
-		namespace string
-		instance string
+		namespace      string
+		instance       string
 		controllerName string
-		fileName string
+		fileName       string
 		originFileName string
 	)
-	if value,ok := entry.Labels[NamespaceLabel]; ok {
+	if value, ok := entry.Labels[NamespaceLabel]; ok {
 		namespace = string(value)
 	} else {
 		namespace = defaultNamespace
@@ -173,12 +174,11 @@ func generateMetadata(entry *api.Entry)(metadata, error){
 		namespace:      namespace,
 		controllerName: controllerName,
 		instance:       instance,
-		fileName: fileName,
+		fileName:       fileName,
 		originFilename: originFileName,
 	}, nil
 }
 
-
-func getFileBaseName(fileName string)string{
+func getFileBaseName(fileName string) string {
 	return path.Base(fileName)
 }

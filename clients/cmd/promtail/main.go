@@ -9,7 +9,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/version"
 	"github.com/weaveworks/common/logging"
-	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog"
 	"os"
 	"reflect"
@@ -60,13 +59,9 @@ func (c *Config) Clone() flagext.Registerer {
 }
 
 
-func demo(){
-	_,_ = clientcmd.BuildConfigFromFlags("", "")
-}
-
-
 
 func main() {
+
 	// Load config, merging config file and CLI flags
 	var config Config
 	if err := cfg.Parse(&config); err != nil {
