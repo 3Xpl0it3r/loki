@@ -25,7 +25,6 @@ const (
 	defaultInstanceName   = "default_instance"
 )
 
-
 // metadata 写文件所需要的元数据，group/service/app 拼接目录
 type metadata struct {
 	namespace      string

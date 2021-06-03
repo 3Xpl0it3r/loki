@@ -74,7 +74,7 @@ func (h *handler) checkTruncatePoint() (bool, string) {
 	//获取备份文件的名称
 	fileBackPostfix := cur.Format("2006-01-02")
 
-	return true, h.fileName + "-" + fileBackPostfix
+	return true, h.fileName + "-" + fileBackPostfix + ".log"
 }
 
 

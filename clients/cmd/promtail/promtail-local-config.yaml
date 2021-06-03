@@ -9,13 +9,16 @@ positions:
 clients:    # 客户端在原来基础上包一层
 - file_system_config:       #客户端是Loki， loki下面的配置和官方的保持一致
     path: "/tmp/promtail/log"
+- loki:
+    url: http://172.37.66.191:3100/loki/api/v1/push
 
 
 scrape_configs:
-- job_name: system
+- job_name: hehehehe
   static_configs:
   - targets:
       - localhost
     labels:
       job: varlogs
       __path__: /tmp/logs/*.log
+

@@ -134,12 +134,11 @@ func mustRegisterOrGet(reg prometheus.Registerer, c prometheus.Collector) promet
 
 // Client pushes entries to Loki and can be stopped
 
-
 // Client for pushing logs in snappy-compressed protos over HTTP.
 type client struct {
 	metrics *metrics
 	logger  log.Logger
-	cfg    LokiConfig
+	cfg     LokiConfig
 	client  *http.Client
 	entries chan api.Entry
 
@@ -229,6 +228,7 @@ func (c *client) run() {
 			if !ok {
 				return
 			}
+
 			e, tenantID := c.processEntry(e)
 			batch, ok := batches[tenantID]
 
@@ -401,6 +401,8 @@ func (c *client) processEntry(e api.Entry) (api.Entry, string) {
 	if len(c.externalLabels) > 0 {
 		e.Labels = c.externalLabels.Merge(e.Labels)
 	}
+	var custom model.LabelSet = map[model.LabelName]model.LabelValue{model.LabelName("test"): model.LabelValue("hh")}
+	e.Labels = custom.Merge(e.Labels)
 	tenantID := c.getTenantID(e.Labels)
 	return e, tenantID
 }

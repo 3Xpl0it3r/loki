@@ -33,7 +33,6 @@ const (
 	kubernetesPodNodeField = "spec.nodeName"
 )
 
-
 // custom label
 
 // copy from prometheus
@@ -50,7 +49,7 @@ const (
 	podContainerPortNameLabel     = metaLabelPrefix + "pod_container_port_name"
 	podContainerPortNumberLabel   = metaLabelPrefix + "pod_container_port_number"
 	podContainerPortProtocolLabel = metaLabelPrefix + "pod_container_port_protocol"
-	podContainerIdLabel = metaLabelPrefix + "pod_container_id"
+	podContainerIdLabel           = metaLabelPrefix + "pod_container_id"
 	podContainerIsInit            = metaLabelPrefix + "pod_container_init"
 	podReadyLabel                 = metaLabelPrefix + "pod_ready"
 	podPhaseLabel                 = metaLabelPrefix + "pod_phase"
@@ -126,7 +125,6 @@ func NewFileTargetManager(
 			}
 		}
 
-
 		// Add an additional api-level node filtering, so we only fetch pod metadata for
 		// all the pods from the current node. Without this filtering we will have to
 		// download metadata for all pods running on a cluster, which may be a long operation.
@@ -149,7 +147,7 @@ func NewFileTargetManager(
 			hostname:       hostname,
 			entryHandler:   pipeline.Wrap(client),
 			targetConfig:   targetConfig,
-			docker: docker,
+			docker:         docker,
 		}
 		tm.syncers[cfg.JobName] = s
 		configs[cfg.JobName] = cfg.ServiceDiscoveryConfig.Configs()
@@ -250,7 +248,6 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 				labels[model.LabelName(k)] = model.LabelValue(v)
 			}
 
-
 			// Drop empty targets (drop in relabeling).
 			if processedLabels == nil {
 				dropped = append(dropped, target.NewDroppedTarget("dropping target, no labels", discoveredLabels))
@@ -278,33 +275,39 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 			containerId, ok := labels[podContainerIdLabel]
 			if ok {
 				// 确认来自k8s
-				mountVolume,errGetMV := s.docker.MountsVolumes(string(containerId))
+				mountVolume, errGetMV := s.docker.MountsVolumes(string(containerId))
 
 				if errGetMV != nil {
 					level.Error(s.log).Log("msg", "get pod'volume in hostpath failed ", "err", errGetMV.Error())
 					goto CONTINUE
 				}
-				diffPath,errGetMerge := s.docker.GraphDriverUpperDir(string(containerId))
-				if errGetMerge != nil{
+				diffPath, errGetMerge := s.docker.GraphDriverUpperDir(string(containerId))
+				if errGetMerge != nil {
 					level.Error(s.log).Log("msg", "get merge path in host failed", "err", errGetMerge.Error())
-					if mountVolume != ""{
+					if mountVolume != "" {
 						path = model.LabelValue(mountVolume + "/*.log")
 					}
 					goto CONTINUE
 				}
 				// mountVolume /root/logs/app_name/*.log
 				// diffpath xxx/root/log/*.log
-				if mountVolume != "" && diffPath != ""{
-					path = model.LabelValue("{" + mountVolume + "/*.log," + diffPath + "/root/logs/*.log" + "}")
-				} else if mountVolume != ""{
+				if mountVolume != "" && diffPath != "" {
+					_appInMount := mountVolume + "/*.log"
+					_appInMountRecusive := mountVolume + "/*/*.log"
+					_gcLog := diffPath + "/root/logs/*.log"
+					_appInDiff := diffPath + "/root/logs/*/*.log"
+					path = model.LabelValue("{" + _appInMount +"," + _appInMountRecusive + "," + _gcLog + "," + _appInDiff  + "}")
+				} else if mountVolume != "" {
+					// if diffPath is empty
 					path = model.LabelValue(mountVolume + "/*.log")
 				} else {
-					path = model.LabelValue(diffPath + "/root/logs/*.log")
+					// if mountVolume is empty
+					//path = model.LabelValue(diffPath + "/root/logs/*.log")
+					path = model.LabelValue("{" + diffPath + "/root/logs/*.log," + diffPath + "/root/logs/*/*.log" + "}")
 				}
 
 			}
-			CONTINUE:
-
+		CONTINUE:
 
 			for k := range labels {
 				if strings.HasPrefix(string(k), "__") {
@@ -395,4 +398,18 @@ func hostname() (string, error) {
 	}
 
 	return os.Hostname()
+}
+
+
+func pathFromDocker(diff, volume string)string{
+	if diff == "" && volume == ""{
+		return ""
+	}
+	if diff != ""{
+		diff = diff + "/*.log" + "," + diff + "/*/*.log"
+	}
+	if volume != ""{
+		volume = diff + "/*.log" + "," + volume + "/*/*.log"
+	}
+	return ""
 }
