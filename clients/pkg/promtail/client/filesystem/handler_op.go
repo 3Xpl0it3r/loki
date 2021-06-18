@@ -44,12 +44,19 @@ func (h *handler) tryReOpen() error {
 
 // flush sync data to disk
 func (h *handler) flush() error {
-	// 将数据刷新到磁盘，写入到文件里面
+	// flush data into disk
 	_, err := h.fp.Write(h.buf.Bytes())
 	if err != nil {
 		level.Error(h.logger).Log("msg", "flush stream to disk failed"+h.fileName, "err", err.Error())
+		// 放置文件/目录被意外删除，重新尝试打开文件
+		_ = createDirectoryIfNotExisted(h.pathDir)
+		err = h.tryReOpen()
+		if err != nil{
+			level.Error(h.logger).Log("msg", "reopen filehandler failed : %v", err)
+		}
 		return err
 	}
+
 	err = h.fp.Sync()
 	if err != nil {
 		level.Error(h.logger).Log("msg", "sync file to disk failed", "err", err.Error())

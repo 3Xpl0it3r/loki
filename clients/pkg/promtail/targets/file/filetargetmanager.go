@@ -292,11 +292,11 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 				// mountVolume /root/logs/app_name/*.log
 				// diffpath xxx/root/log/*.log
 				if mountVolume != "" && diffPath != "" {
+					//由于dockerfile volume写到app一级，因此不需要在递归一次
 					_appInMount := mountVolume + "/*.log"
-					_appInMountRecusive := mountVolume + "/*/*.log"
-					_gcLog := diffPath + "/root/logs/*.log"
-					_appInDiff := diffPath + "/root/logs/*/*.log"
-					path = model.LabelValue("{" + _appInMount +"," + _appInMountRecusive + "," + _gcLog + "," + _appInDiff  + "}")
+					_gcLog := diffPath + "/root/logs/*.log" 		// for gc log
+					_appInDiff := diffPath + "/root/logs/*/*.log" 	// for app log
+					path = model.LabelValue("{" + _appInMount  + "," + _gcLog + "," + _appInDiff  + "}")
 				} else if mountVolume != "" {
 					// if diffPath is empty
 					path = model.LabelValue(mountVolume + "/*.log")
