@@ -1,8 +1,12 @@
 package filesystem
 
 import (
+	"crypto/md5"
 	"errors"
+	"fmt"
 	"os"
+	"strings"
+	"time"
 )
 
 // 检测file handler is validate
@@ -24,4 +28,33 @@ func createDirectoryIfNotExisted(dir string) error {
 		}
 	}
 	return nil
+}
+
+
+// DeploymentName get deployment from controllerName
+// in common case controllerName is represent the name of replicaset
+func DeploymentName(controllerName string)string{
+	nSplit := strings.Split(controllerName, "-")
+	if len(nSplit) >=2 {
+		return strings.Join(nSplit[:len(nSplit)-1], "-")
+	}
+	return controllerName
+}
+
+
+// dateToday return an date string according
+func dateToday()string{
+	year, month, day := time.Now().Date()
+	return fmt.Sprintf("%d-%d-%d", year, month, day)
+}
+
+
+func hashForIdentifier(in string)string{
+	hash := md5.New()
+	_,err := hash.Write([]byte(in))
+	if err != nil{
+		return in
+	}
+	result := hash.Sum([]byte(fmt.Sprintf("%d", time.Now().Nanosecond())))
+	return fmt.Sprintf("%x", result)
 }

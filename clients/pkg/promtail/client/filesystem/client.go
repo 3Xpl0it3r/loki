@@ -27,32 +27,32 @@ const (
 
 // metadata 写文件所需要的元数据，group/service/app 拼接目录
 type metadata struct {
+	// namespace kubernetes
 	namespace      string
+	// name of controller , common case in appear in kubernetes environment
+	// in our case controllerName always represent replicaset name
 	controllerName string
+	// instance represent host that pod located
 	instance       string
+	// fileName represent the log name that need to be gather by promtail
+	// fileName is differ from originFilename
+	// fileName is not contains path, but originFilename is an absolute filename that combine filename and an absolute path
 	fileName       string
 	originFilename string
 }
 
 func (m metadata) Identifier() string {
-	return m.instance + "-" + m.originFilename
+	return m.namespace + m.controllerName + m.instance + m.originFilename
+	//return hashForIdentifier(m.namespace + m.controllerName + m.instance + m.originFilename)
 }
 func (m metadata) FileName() string {
 	return m.fileName
 }
 func (m metadata) RelativePath() string {
-	return m.namespace + "/" + m.controllerName + "/" + m.instance
+	return m.namespace + "/" + DeploymentName(m.controllerName) + "/" +dateToday() + "/" + m.instance
 }
 
-// 文件操作句柄接口
-type Handler interface {
-	// 推出关闭，清理资源
-	close()
-	//  开始运行handler，每个handler都打开一个文件，写文件
-	run(ctx context.Context)
-	// 从client接收资源
-	Chan() chan<- api.Entry
-}
+
 
 // client 描述客户端所需要的信息
 type client struct {

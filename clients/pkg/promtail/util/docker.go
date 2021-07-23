@@ -64,7 +64,7 @@ func(d *DockerClient)Volumes(containerId string)(string,error){
 	return "", errors.New("not volume in this container " + containerId)
 }
 
-
+// MountsVolumes return the Mounts that returned by docker inspect information
 func(d *DockerClient)MountsVolumes(containerId string)(string,error){
 	ctx,cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -80,7 +80,7 @@ func(d *DockerClient)MountsVolumes(containerId string)(string,error){
 	return "", err
 }
 
-// GraphDiff show diff
+// GraphDriverUpperDir return UpperDir data that returned by inspect information
 func(d *DockerClient)GraphDriverUpperDir(containerId string)(string,error){
 	ctx,cancel := context.WithCancel(context.Background())
 	defer cancel()

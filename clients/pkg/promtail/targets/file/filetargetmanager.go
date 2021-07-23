@@ -289,6 +289,8 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 					}
 					goto CONTINUE
 				}
+				tomcatLocalAccess := "/usr/local/tomcat/logs/localhost_access_log.log"
+				tomcatCatalinaLog := "/usr/local/tomcat/logs/catalina.out"
 				// mountVolume /root/logs/app_name/*.log
 				// diffpath xxx/root/log/*.log
 				if mountVolume != "" && diffPath != "" {
@@ -296,14 +298,17 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group) {
 					_appInMount := mountVolume + "/*.log"
 					_gcLog := diffPath + "/root/logs/*.log" 		// for gc log
 					_appInDiff := diffPath + "/root/logs/*/*.log" 	// for app log
-					path = model.LabelValue("{" + _appInMount  + "," + _gcLog + "," + _appInDiff  + "}")
+					_tomcatInDiffAccess := diffPath + tomcatLocalAccess
+					_catalinalogDiff := diffPath + tomcatCatalinaLog
+					path = model.LabelValue("{" + _appInMount  + "," + _gcLog + "," + _tomcatInDiffAccess + "," + _catalinalogDiff + "," + _appInDiff  + "}")
 				} else if mountVolume != "" {
 					// if diffPath is empty
 					path = model.LabelValue(mountVolume + "/*.log")
 				} else {
 					// if mountVolume is empty
 					//path = model.LabelValue(diffPath + "/root/logs/*.log")
-					path = model.LabelValue("{" + diffPath + "/root/logs/*.log," + diffPath + "/root/logs/*/*.log" + "}")
+					path = model.LabelValue("{" + diffPath + "/root/logs/*.log," + diffPath + "/root/logs/*/*.log," +
+						diffPath + tomcatLocalAccess +"," + diffPath + tomcatCatalinaLog +"," +"}")
 				}
 
 			}
