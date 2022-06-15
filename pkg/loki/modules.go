@@ -342,9 +342,15 @@ func (t *Loki) initIngester() (_ services.Service, err error) {
 	httpMiddleware := middleware.Merge(
 		serverutil.RecoveryHTTPMiddleware,
 	)
-	t.Server.HTTP.Path("/flush").Methods("GET", "POST").Handler(httpMiddleware.Wrap(http.HandlerFunc(t.Ingester.FlushHandler)))
-	t.Server.HTTP.Methods("POST").Path("/ingester/flush_shutdown").Handler(httpMiddleware.Wrap(http.HandlerFunc(t.Ingester.ShutdownHandler)))
-
+	t.Server.HTTP.Methods("GET", "POST").Path("/flush").Handler(
+		httpMiddleware.Wrap(http.HandlerFunc(t.Ingester.FlushHandler)),
+	)
+	t.Server.HTTP.Methods("POST").Path("/ingester/flush_shutdown").Handler(
+		httpMiddleware.Wrap(http.HandlerFunc(t.Ingester.LegacyShutdownHandler)),
+	)
+	t.Server.HTTP.Methods("POST").Path("/ingester/shutdown").Handler(
+		httpMiddleware.Wrap(http.HandlerFunc(t.Ingester.ShutdownHandler)),
+	)
 	return t.Ingester, nil
 }
 
@@ -985,7 +991,7 @@ func (t *Loki) deleteRequestsClient() (deletion.DeleteRequestsClient, error) {
 		return nil, err
 	}
 
-	return deletion.NewDeleteRequestsClient(compactorAddress, &http.Client{Timeout: 5 * time.Second})
+	return deletion.NewDeleteRequestsClient(compactorAddress, &http.Client{Timeout: 5 * time.Second}, prometheus.DefaultRegisterer)
 }
 
 func calculateMaxLookBack(pc config.PeriodConfig, maxLookBackConfig, minDuration time.Duration) (time.Duration, error) {
