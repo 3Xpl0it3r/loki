@@ -2,6 +2,7 @@ package stages
 
 import (
 	"bytes"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +12,6 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/grafana/loki/clients/pkg/promtail/client"
 
 	lokiutil "github.com/grafana/loki/pkg/util"
 	util_log "github.com/grafana/loki/pkg/util/log"
@@ -159,7 +158,7 @@ func TestTenantStage_Process(t *testing.T) {
 		},
 		"should not override the tenant if the source field is not defined in the extracted map": {
 			config:         &TenantConfig{Source: "tenant_id"},
-			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
+			inputLabels:    model.LabelSet{metrics.ReservedLabelTenantID: "foo"},
 			inputExtracted: map[string]interface{}{},
 			expectedTenant: lokiutil.StringRef("foo"),
 		},
@@ -177,7 +176,7 @@ func TestTenantStage_Process(t *testing.T) {
 		},
 		"should override the tenant if the source field is defined in the extracted map": {
 			config:         &TenantConfig{Source: "tenant_id"},
-			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
+			inputLabels:    model.LabelSet{metrics.ReservedLabelTenantID: "foo"},
 			inputExtracted: map[string]interface{}{"tenant_id": "bar"},
 			expectedTenant: lokiutil.StringRef("bar"),
 		},
@@ -195,7 +194,7 @@ func TestTenantStage_Process(t *testing.T) {
 		},
 		"should override the tenant with the configured static value": {
 			config:         &TenantConfig{Value: "bar"},
-			inputLabels:    model.LabelSet{client.ReservedLabelTenantID: "foo"},
+			inputLabels:    model.LabelSet{metrics.ReservedLabelTenantID: "foo"},
 			inputExtracted: map[string]interface{}{},
 			expectedTenant: lokiutil.StringRef("bar"),
 		},
@@ -216,7 +215,7 @@ func TestTenantStage_Process(t *testing.T) {
 			assert.Equal(t, time.Unix(1, 1), out.Timestamp)
 			assert.Equal(t, "hello world", out.Line)
 
-			actualTenant, ok := out.Labels[client.ReservedLabelTenantID]
+			actualTenant, ok := out.Labels[metrics.ReservedLabelTenantID]
 			if testData.expectedTenant == nil {
 				assert.False(t, ok)
 			} else {

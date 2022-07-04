@@ -22,6 +22,7 @@ func NewTargetManager(
 	logger log.Logger,
 	pushClient api.EntryHandler,
 	scrapeConfigs []scrapeconfig.Config,
+
 ) (*TargetManager, error) {
 	tm := &TargetManager{
 		logger:        logger,

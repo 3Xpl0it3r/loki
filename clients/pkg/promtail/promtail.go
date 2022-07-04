@@ -1,6 +1,9 @@
 package promtail
 
 import (
+	"github.com/go-kit/kit/log/level"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	"github.com/grafana/loki/clients/pkg/promtail/util"
 	"sync"
 
 	"github.com/go-kit/log"
@@ -42,12 +45,14 @@ type Promtail struct {
 	logger         log.Logger
 	reg            prometheus.Registerer
 
+	docker *util.DockerClient
+
 	stopped bool
 	mtx     sync.Mutex
 }
 
 // New makes a new Promtail.
-func New(cfg config.Config, metrics *client.Metrics, dryRun bool, opts ...Option) (*Promtail, error) {
+func New(cfg config.Config, metrics *metrics.Metrics, dryRun bool, opts ...Option) (*Promtail, error) {
 	// Initialize promtail with some defaults and allow the options to override
 	// them.
 	promtail := &Promtail{
@@ -62,6 +67,14 @@ func New(cfg config.Config, metrics *client.Metrics, dryRun bool, opts ...Option
 		o(promtail)
 	}
 
+	// create docker
+	docker := util.NewDockerClient()
+	if err := docker.Ping();err != nil{
+		level.Error(promtail.logger).Log("Failed Create Promtail", err)
+		return nil, err
+	}
+	promtail.docker = docker
+
 	cfg.Setup(promtail.logger)
 
 	if cfg.LimitsConfig.ReadlineRateEnabled {
@@ -69,19 +82,19 @@ func New(cfg config.Config, metrics *client.Metrics, dryRun bool, opts ...Option
 	}
 	var err error
 	if dryRun {
-		promtail.client, err = client.NewLogger(metrics, cfg.Options.StreamLagLabels, promtail.logger, cfg.ClientConfigs...)
+		promtail.client, err = client.NewLogger(metrics, cfg.Options.StreamLagLabels, promtail.logger, cfg.ClientConfigs)
 		if err != nil {
 			return nil, err
 		}
 		cfg.PositionsConfig.ReadOnly = true
 	} else {
-		promtail.client, err = client.NewMulti(metrics, cfg.Options.StreamLagLabels, promtail.logger, cfg.ClientConfigs...)
+		promtail.client, err = client.NewMulti(metrics, cfg.Options.StreamLagLabels, promtail.logger, cfg.ClientConfigs)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	tms, err := targets.NewTargetManagers(promtail, promtail.reg, promtail.logger, cfg.PositionsConfig, promtail.client, cfg.ScrapeConfig, &cfg.TargetConfig)
+	tms, err := targets.NewTargetManagers(promtail, promtail.reg, promtail.logger, cfg.PositionsConfig, promtail.client, cfg.ScrapeConfig, &cfg.TargetConfig, docker)
 	if err != nil {
 		return nil, err
 	}

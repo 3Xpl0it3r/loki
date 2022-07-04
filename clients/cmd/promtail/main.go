@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"reflect"
 
@@ -19,7 +20,6 @@ import (
 
 	"github.com/grafana/loki/clients/pkg/logentry/stages"
 	"github.com/grafana/loki/clients/pkg/promtail"
-	"github.com/grafana/loki/clients/pkg/promtail/client"
 	"github.com/grafana/loki/clients/pkg/promtail/config"
 
 	"github.com/grafana/loki/pkg/util"
@@ -111,7 +111,7 @@ func main() {
 		}
 	}
 
-	clientMetrics := client.NewMetrics(prometheus.DefaultRegisterer, config.Config.Options.StreamLagLabels)
+	clientMetrics := metrics.NewMetrics(prometheus.DefaultRegisterer, config.Config.Options.StreamLagLabels)
 	p, err := promtail.New(config.Config, clientMetrics, config.dryRun)
 	if err != nil {
 		level.Error(util_log.Logger).Log("msg", "error creating promtail", "error", err)

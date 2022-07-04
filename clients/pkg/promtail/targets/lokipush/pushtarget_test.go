@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"net"
 	"net/http"
 	"os"
@@ -84,7 +85,7 @@ func TestLokiPushTarget(t *testing.T) {
 		BatchWait: 1 * time.Second,
 		BatchSize: 100 * 1024,
 	}
-	m := client.NewMetrics(prometheus.DefaultRegisterer, nil)
+	m := metrics.NewMetrics(prometheus.DefaultRegisterer, nil)
 	pc, err := client.New(m, ccfg, nil, logger)
 	require.NoError(t, err)
 	defer pc.Stop()

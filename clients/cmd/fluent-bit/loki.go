@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"sort"
 	"strings"
@@ -36,7 +37,7 @@ type loki struct {
 	logger log.Logger
 }
 
-func newPlugin(cfg *config, logger log.Logger, metrics *client.Metrics) (*loki, error) {
+func newPlugin(cfg *config, logger log.Logger, metrics *metrics.Metrics) (*loki, error) {
 	client, err := NewClient(cfg, logger, metrics, nil)
 	if err != nil {
 		return nil, err

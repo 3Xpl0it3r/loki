@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"runtime"
 	"sync"
@@ -35,23 +36,22 @@ type logger struct {
 }
 
 // NewLogger creates a new client logger that logs entries instead of sending them.
-func NewLogger(metrics *Metrics, streamLogLabels []string, log log.Logger, cfgs ...Config) (Client, error) {
+func NewLogger(metrics *metrics.Metrics, streamLogLabels []string, log log.Logger, cfgs Configs) (Client, error) {
 	// make sure the clients config is valid
-	c, err := NewMulti(metrics, streamLogLabels, log, cfgs...)
+	c, err := NewMulti(metrics, streamLogLabels, log, cfgs)
 	if err != nil {
 		return nil, err
 	}
 	c.Stop()
 
 	fmt.Println(yellow.Sprint("Clients configured:"))
-	for _, cfg := range cfgs {
-		yaml, err := yaml.Marshal(cfg)
-		if err != nil {
-			return nil, err
-		}
-		fmt.Println("----------------------")
-		fmt.Println(string(yaml))
+
+	yaml, err := yaml.Marshal(cfgs)
+	if err != nil {
+		return nil, err
 	}
+	fmt.Println("----------------------")
+	fmt.Println(string(yaml))
 	entries := make(chan api.Entry)
 	l := &logger{
 		Writer:  tabwriter.NewWriter(os.Stdout, 0, 8, 0, '\t', 0),

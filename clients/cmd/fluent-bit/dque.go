@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"sync"
 	"time"
@@ -51,7 +52,7 @@ type dqueClient struct {
 }
 
 // New makes a new dque loki client
-func newDque(cfg *config, logger log.Logger, metrics *client.Metrics, streamLagLabels []string) (client.Client, error) {
+func newDque(cfg *config, logger log.Logger, metrics *metrics.Metrics, streamLagLabels []string) (client.Client, error) {
 	var err error
 
 	q := &dqueClient{

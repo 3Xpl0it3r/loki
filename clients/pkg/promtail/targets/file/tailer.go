@@ -130,6 +130,7 @@ func (t *tailer) readLines() {
 	// This function runs in a goroutine, if it exits this tailer will never do any more tailing.
 	// Clean everything up.
 	defer func() {
+		_ = t.markPositionAndSize()
 		t.cleanupMetrics()
 		t.running.Store(false)
 		level.Info(t.logger).Log("msg", "tail routine: exited", "path", t.path)

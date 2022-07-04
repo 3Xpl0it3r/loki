@@ -1,0 +1,118 @@
+clients:
+  file_system_config:
+    path: /tmp/promtail/log
+#  kafka:
+#    batch_size: 400000
+#    url: "172.35.88.54:9092"
+
+positions:
+  filename: /tmp/positions.yaml
+server:
+  http_listen_port: 43101
+  grpc_listen_port: 49005
+target_config:
+  sync_period: 10s
+scrape_configs:
+  - job_name: kubernetes_pods_app
+    pipeline_stages:
+      - match:
+          selector: '{filename=~".*/localhost_access_log.log"}'
+          stages:
+            - regex:
+                expression: '(?P<remote_addr>\S*)\s-\s-\s\[(?P<time_local>.*?)\]\s"(?P<request>.*?)"\s(?P<status>\d+)\s(?P<body_bytes>\d+)$'
+            - metrics:
+                localhost_500:
+                  config:
+                    action: inc
+                    value: "500"
+                  description: 'log lines start with `com.alibaba.dubbo.rpc.RpcException`'
+                  source: status
+                  type: Counter
+      - match:
+          selector: '{filename=~".*/catalina.out"}'
+          stages:
+            - regex:
+                expression: 'org.apache.catalina.startup.Catalina.start Server startup in\s(?P<start_cost>\d+)\s'
+            - regex:
+                source: start_cost
+                expression: '(?P<start_cost>\d+)'
+            - metrics:
+                tomcat_start_up:
+                  config:
+                    action: set
+                  description: 'log lines start with `com.alibaba.dubbo.rpc.RpcException`'
+                  source: start_cost
+                  type: Gauge
+      - match:
+          selector: '{filename=~".*/app.log"}'
+          stages:
+            - labeldrop:
+                - deployId
+                - version
+                - pod_template_hash
+            - regex:
+                expression: ^(?P<rpc_exception>com.alibaba.dubbo.rpc.RpcException).*$
+            - metrics:
+                rpc_exception_count:
+                  config:
+                    action: inc
+                  description: log lines start with `com.alibaba.dubbo.rpc.RpcException`
+                  source: rpc_exception
+                  type: Counter
+            - regex:
+                expression: ^.*(?P<thread_pool_full>Thread pool is EXHAUSTED!).*$
+            - metrics:
+                thread_pool_full_count:
+                  config:
+                    action: inc
+                  description: thread_pool_full_count
+                  source: thread_pool_full
+                  type: Counter
+      - match:
+          selector: '{filename=~".*/gc.log"} |= "Full GC"'
+          stages:
+            - metrics:
+                full_gc_count:
+                  config:
+                    action: inc
+                    match_all: true
+                  description: full_gc_count
+                  type: Counter
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: ["default"]
+    relabel_configs:
+      - source_labels:
+          - __meta_kubernetes_pod_node_name
+        target_label: __host__
+      - source_labels:
+          - __meta_kubernetes_pod_controller_name
+        target_label: controller_name
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - action: replace
+        replacement: $1
+        separator: /
+        source_labels:
+          - __meta_kubernetes_namespace
+          - __service__
+        target_label: job
+      - action: replace
+        source_labels:
+          - __meta_kubernetes_namespace
+        target_label: namespace
+      - action: replace
+        source_labels:
+          - __meta_kubernetes_pod_name
+        target_label: instance
+      - action: replace
+        source_labels:
+          - __meta_kubernetes_pod_container_name
+        target_label: container_name
+      - replacement: /var/log/pods/$1/*.log
+        separator: /
+        source_labels:
+          - __meta_kubernetes_pod_uid
+          - __meta_kubernetes_pod_container_name
+        target_label: __path__s

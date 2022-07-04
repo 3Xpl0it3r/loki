@@ -21,6 +21,8 @@ import (
 	"gopkg.in/tomb.v1"
 )
 
+const DefaultAwaitForChangePeriod = 300 * 1
+
 var (
 	ErrStop = errors.New("tail should now stop")
 )
@@ -383,11 +385,19 @@ func (tail *Tail) tailFileSync() {
 			// When EOF is reached, wait for more data to become
 			// available. Wait strategy is based on the `tail.watcher`
 			// implementation (inotify or polling).
-			oneMoreRun, err = tail.waitForChanges()
-			if err != nil {
-				if err != ErrStop {
-					tail.Kill(err)
+
+			for i := 0; i < DefaultAwaitForChangePeriod; i++ {
+				oneMoreRun,err = tail.waitForChanges()
+				if err == nil{
+					break
 				}
+				if err != ErrStop{
+					tail.Kill(err)
+					return
+				}
+				time.Sleep(1 * time.Second)
+			}
+			if err == ErrStop{
 				return
 			}
 		} else {

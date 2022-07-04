@@ -1,18 +1,17 @@
-package client
+package loki
 
 import (
-	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/api"
+	"github.com/grafana/loki/pkg/logproto"
+	"github.com/prometheus/common/model"
 	"sort"
 	"strings"
 	"time"
+	"fmt"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
-	"github.com/prometheus/common/model"
 
-	"github.com/grafana/loki/clients/pkg/promtail/api"
-
-	"github.com/grafana/loki/pkg/logproto"
 )
 
 // batch holds pending log streams waiting to be sent to Loki, and it's used

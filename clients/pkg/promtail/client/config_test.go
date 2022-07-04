@@ -1,26 +1,19 @@
 package client
 
 import (
-	"net/url"
-	"reflect"
 	"testing"
-	"time"
-
-	"github.com/grafana/dskit/backoff"
-	"github.com/grafana/dskit/flagext"
-	"github.com/stretchr/testify/require"
-
-	"gopkg.in/yaml.v2"
 )
 
-var clientConfig = Config{}
+var clientConfig = Configs{}
 
 var clientDefaultConfig = (`
 url: http://localhost:3100/loki/api/v1/push
+kind: loki
 `)
 
-var clientCustomConfig = `
+var clientCustomLokiConfig = `
 url: http://localhost:3100/loki/api/v1/push
+kind: loki
 backoff_config:
   max_retries: 20
   min_period: 5s
@@ -30,52 +23,41 @@ batchsize: 204800
 timeout: 5s
 `
 
-func Test_Config(t *testing.T) {
-	u, err := url.Parse("http://localhost:3100/loki/api/v1/push")
-	require.NoError(t, err)
-	tests := []struct {
-		configValues   string
-		expectedConfig Config
-	}{
-		{
-			clientDefaultConfig,
-			Config{
-				URL: flagext.URLValue{
-					URL: u,
-				},
-				BackoffConfig: backoff.Config{
-					MaxBackoff: MaxBackoff,
-					MaxRetries: MaxRetries,
-					MinBackoff: MinBackoff,
-				},
-				BatchSize: BatchSize,
-				BatchWait: BatchWait,
-				Timeout:   Timeout,
-			},
-		},
-		{
-			clientCustomConfig,
-			Config{
-				URL: flagext.URLValue{
-					URL: u,
-				},
-				BackoffConfig: backoff.Config{
-					MaxBackoff: 1 * time.Minute,
-					MaxRetries: 20,
-					MinBackoff: 5 * time.Second,
-				},
-				BatchSize: 100 * 2048,
-				BatchWait: 5 * time.Second,
-				Timeout:   5 * time.Second,
-			},
-		},
-	}
-	for _, tc := range tests {
-		err := yaml.Unmarshal([]byte(tc.configValues), &clientConfig)
-		require.NoError(t, err)
+var clientMultiCustomEsConfig = `
+`
 
-		if !reflect.DeepEqual(tc.expectedConfig, clientConfig) {
-			t.Errorf("Configs does not match, expected: %v, received: %v", tc.expectedConfig, clientConfig)
-		}
-	}
+func Test_Config(t *testing.T) {
+	//u, err := url.Parse("http://localhost:3100/loki/api/v1/push")
+	//require.NoError(t, err)
+	//tests := []struct {
+	//	configValues   string
+	//	expectedConfig Config
+	//}{
+	//	{
+	//		clientCustomLokiConfig,
+	//		Config{
+	//			Kind: LokiClient,
+	//			LokiConfig: loki.LokiConfig{
+	//				URL:       flagext.URLValue{URL: u},
+	//				BatchWait: 5 * time.Second,
+	//				BatchSize: 100 * 2048,
+	//				BackoffConfig: util.BackoffConfig{
+	//					MaxRetries: 20,
+	//					MaxBackoff: 1 * time.Minute,
+	//					MinBackoff: 5 * time.Second,
+	//				},
+	//				ExternalLabels: fe.LabelSet{},
+	//				Timeout:        5 * time.Second,
+	//			},
+	//		},
+	//	},
+	//}
+	//for _, tc := range tests {
+	//	err := yaml.Unmarshal([]byte(tc.configValues), &clientConfig)
+	//	require.NoError(t, err)
+	//
+	//	if !reflect.DeepEqual(tc.expectedConfig, clientConfig) {
+	//		t.Errorf("Configs does not match, expected: %v, received: %v", tc.expectedConfig, clientConfig)
+	//	}
+	//}
 }

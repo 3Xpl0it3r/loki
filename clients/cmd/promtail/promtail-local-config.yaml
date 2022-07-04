@@ -6,7 +6,14 @@ positions:
   filename: /tmp/positions.yaml
 
 clients:
-  - url: http://localhost:3100/loki/api/v1/push
+  kafka:
+    url: "172.37.101.16:9092"
+  file_system_config:
+    path: "/tmp/promtail/log"
+  # loki:
+  #   url: "http://172.37.66.191:3100/loki/api/v1/push"
+  #   external_labels:
+  #     promtail_env: "dev3"
 
 scrape_configs:
 - job_name: system
@@ -15,4 +22,12 @@ scrape_configs:
       - localhost
     labels:
       job: varlogs
-      __path__: /var/log/*log
+      __path__: /tmp/logs/apaas-openapi/*.log
+
+
+# for file discovery
+#- job_name: file_discovery
+#  file_sd_configs:
+#    - files:
+#      - target.json
+#      refresh_interval: 10s

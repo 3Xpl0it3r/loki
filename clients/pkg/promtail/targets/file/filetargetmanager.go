@@ -3,9 +3,11 @@ package file
 import (
 	"context"
 	"fmt"
-	"os"
+	"path"
 	"strings"
 	"sync"
+
+	"github.com/docker/docker/api/types"
 
 	"github.com/bmatcuk/doublestar"
 	"gopkg.in/fsnotify.v1"
@@ -26,6 +28,7 @@ import (
 	"github.com/grafana/loki/clients/pkg/promtail/scrapeconfig"
 	"github.com/grafana/loki/clients/pkg/promtail/targets/target"
 
+	dockerutil "github.com/grafana/loki/clients/pkg/promtail/util"
 	"github.com/grafana/loki/pkg/util"
 )
 
@@ -34,6 +37,9 @@ const (
 	pathExcludeLabel       = "__path_exclude__"
 	hostLabel              = "__host__"
 	kubernetesPodNodeField = "spec.nodeName"
+
+	metaLabelPrefix     = model.MetaLabelPrefix + "kubernetes_"
+	podContainerIdLabel = metaLabelPrefix + "pod_container_id"
 )
 
 // FileTargetManager manages a set of targets.
@@ -58,6 +64,7 @@ func NewFileTargetManager(
 	client api.EntryHandler,
 	scrapeConfigs []scrapeconfig.Config,
 	targetConfig *Config,
+	docker *dockerutil.DockerClient,
 ) (*FileTargetManager, error) {
 	reg := metrics.reg
 	if reg == nil {
@@ -130,6 +137,7 @@ func NewFileTargetManager(
 			entryHandler:      pipeline.Wrap(client),
 			targetConfig:      targetConfig,
 			fileEventWatchers: map[string]chan fsnotify.Event{},
+			docker:            docker,
 		}
 		tm.syncers[cfg.JobName] = s
 		configs[cfg.JobName] = cfg.ServiceDiscoveryConfig.Configs()
@@ -260,13 +268,14 @@ type targetSyncer struct {
 
 	relabelConfig []*relabel.Config
 	targetConfig  *Config
+
+	docker *dockerutil.DockerClient
 }
 
 // sync synchronize target based on received target groups received by service discovery
 func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan fileTargetEvent) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-
 	targets := map[string]struct{}{}
 	dropped := []target.Target{}
 
@@ -303,12 +312,50 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 				continue
 			}
 
-			path, ok := labels[pathLabel]
-			if !ok {
-				dropped = append(dropped, target.NewDroppedTarget("no path for target", discoveredLabels))
-				level.Info(s.log).Log("msg", "no path for target", "labels", labels.String())
-				s.metrics.failedTargets.WithLabelValues("no_path").Inc()
-				continue
+			// todo add custom path
+			var (
+				path        model.LabelValue
+				containerId model.LabelValue
+			)
+			if fileBasedDiscovery, ok := labels["file_based_discovery"]; ok && string(fileBasedDiscovery) == "static_configs" {
+				// is base file_based_discovery
+				addressTarget, ok := labels["__address__"]
+				if !ok {
+					dropped = append(dropped, target.NewDroppedTarget("no path for target", discoveredLabels))
+					level.Info(s.log).Log("msg", "no path for target", "labels", labels.String())
+					s.metrics.failedTargets.WithLabelValues("no_path").Inc()
+					continue
+				}
+				hostTargetSplit := strings.Split(string(addressTarget), ":")
+				if len(hostTargetSplit) != 2 {
+					continue
+				}
+				if hostTargetSplit[0] != "*" && hostTargetSplit[0] != s.hostname {
+					continue
+				}
+				path = model.LabelValue(hostTargetSplit[1])
+
+			} else { // case for kubernetes
+				// 检测是否是k8s， 既是否包含podContainerId的标签
+				containerId, ok = labels[podContainerIdLabel]
+				labels["containerId"] = containerId
+				if ok {
+					inspect, err := s.docker.DockerInspect(string(containerId))
+					if err != nil {
+						level.Error(s.log).Log("msg", "failed get docker inspect information")
+					} else {
+						path = model.LabelValue(getCustomPodLogPathFromDockerInspect(inspect))
+					}
+				} else {
+					// standard workflow
+					path, ok = labels[pathLabel]
+					if !ok {
+						dropped = append(dropped, target.NewDroppedTarget("no path for target", discoveredLabels))
+						level.Info(s.log).Log("msg", "no path for target", "labels", labels.String())
+						s.metrics.failedTargets.WithLabelValues("no_path").Inc()
+						continue
+					}
+				}
 			}
 
 			pathExclude := labels[pathExcludeLabel]
@@ -319,13 +366,17 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 				}
 			}
 
-			key := fmt.Sprintf("%s:%s", path, labels.String())
-			if pathExclude != "" {
-				key = fmt.Sprintf("%s:%s", key, pathExclude)
+			var key string
+			if string(containerId) != "" { // containerId
+				key = labels.String()
+			} else {
+				key = fmt.Sprintf("%s:%s", path, labels.String())
 			}
-
+			//if pathExclude != "" {
+			//	key = fmt.Sprintf("%s:%s", key, pathExclude)
+			//}
 			targets[key] = struct{}{}
-			if _, ok := s.targets[key]; ok {
+			if _, ok := s.targets[key]; ok { // 已经存在，跳过
 				dropped = append(dropped, target.NewDroppedTarget("ignoring target, already exists", discoveredLabels))
 				level.Debug(s.log).Log("msg", "ignoring target, already exists", "labels", labels.String())
 				s.metrics.failedTargets.WithLabelValues("exists").Inc()
@@ -450,4 +501,44 @@ func hostname() (string, error) {
 	}
 
 	return os.Hostname()
+}
+
+// getCustomPodLogPathFromDockerInspect get some custom log in pod by combine some hard code with some path get from docker inspect
+func getCustomPodLogPathFromDockerInspect(inspect *types.ContainerJSON) string {
+	// for tomcat about logs is located at docker's data path
+	var (
+		tomcatAccessLog   = "/usr/local/tomcat/logs/localhost_access_log.log"
+		tomcatCatalinaLog = "/usr/local/tomcat/logs/catalina.out"
+		jsonAppLog        = "/root/logs/*/appJson/jsonApp.*.log"
+
+		accessRestLog  = "/root/logs/*/access.*.log"
+		accessDubboLog = "/root/logs/*/dubboAccess.*.log"
+		mongoLog       = "/root/logs/*/sql.*.log"
+		gcLog          = "/root/logs/*/gc.log"
+		javaMemory     = "/root/logs/*/memory.log"
+		application    = "/root/logs/*/application.log"
+		appLog         = "/root/logs/*/app.log"
+		stackDubboLog  = "/root/logs/*/DubboStack.*.log"
+		providenceLog  = "/root/logs/*/providence.log"
+	)
+
+	var pathString = "{" + inspect.LogPath + ","
+	//var pathString string = "{"
+	if graphDiff, err := dockerutil.GetDockerDataPath(inspect); err == nil {
+		pathString += path.Join(graphDiff, tomcatCatalinaLog) + "," +
+			path.Join(graphDiff, appLog) + "," +
+			path.Join(graphDiff, tomcatAccessLog) + "," +
+			path.Join(graphDiff, gcLog) + "," +
+			path.Join(graphDiff, jsonAppLog) + "," +
+			path.Join(graphDiff, accessRestLog) + "," +
+			path.Join(graphDiff, accessDubboLog) + "," +
+			path.Join(graphDiff, mongoLog) + "," +
+			path.Join(graphDiff, javaMemory) + "," +
+			path.Join(graphDiff, application) + "," +
+			path.Join(graphDiff, stackDubboLog) + "," +
+			path.Join(graphDiff, providenceLog) + ","
+	}
+
+	pathString += "}"
+	return pathString
 }

@@ -3,6 +3,7 @@ package promtail
 import (
 	"context"
 	"fmt"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"io"
 	"io/ioutil"
 	"math"
@@ -45,7 +46,7 @@ import (
 
 const httpTestPort = 9080
 
-var clientMetrics = client.NewMetrics(prometheus.DefaultRegisterer, nil)
+var clientMetrics = metrics.NewMetrics(prometheus.DefaultRegisterer, nil)
 
 func TestPromtail(t *testing.T) {
 	// Setup.

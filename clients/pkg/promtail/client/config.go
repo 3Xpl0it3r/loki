@@ -2,93 +2,103 @@ package client
 
 import (
 	"flag"
-	"time"
-
-	"github.com/grafana/dskit/backoff"
-	"github.com/grafana/dskit/flagext"
-	"github.com/prometheus/common/config"
-
-	lokiflag "github.com/grafana/loki/pkg/util/flagext"
+	"github.com/go-kit/log"
+	"github.com/grafana/loki/clients/pkg/promtail/api"
+	"github.com/grafana/loki/clients/pkg/promtail/client/filesystem"
+	"github.com/grafana/loki/clients/pkg/promtail/client/kafka"
+	"github.com/grafana/loki/clients/pkg/promtail/client/loki"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	"github.com/pkg/errors"
 )
+
+type Client interface {
+	api.EntryHandler
+	// Stop goroutine sending batch of entries without retries.
+	StopNow()
+	Name()string
+}
+
+type ClientKind string
+
+const (
+	KafkaClient ClientKind = "kafka"
+	LokiClient  ClientKind = "loki"
+	FileClient  ClientKind = "file-system"
+)
+
+type RunnerAble interface {
+	api.EntryHandler
+	// Stop goroutine sending batch of entries without retries.
+	StopNow()
+}
 
 // NOTE the helm chart for promtail and fluent-bit also have defaults for these values, please update to match if you make changes here.
-const (
-	BatchWait      = 1 * time.Second
-	BatchSize  int = 1024 * 1024
-	MinBackoff     = 500 * time.Millisecond
-	MaxBackoff     = 5 * time.Minute
-	MaxRetries int = 10
-	Timeout        = 10 * time.Second
-)
 
-// Config describes configuration for an HTTP pusher client.
-type Config struct {
-	Name      string `yaml:"name,omitempty"`
-	URL       flagext.URLValue
-	BatchWait time.Duration
-	BatchSize int
-
-	Client config.HTTPClientConfig `yaml:",inline"`
-
-	BackoffConfig backoff.Config `yaml:"backoff_config"`
-	// The labels to add to any time series or alerts when communicating with loki
-	ExternalLabels lokiflag.LabelSet `yaml:"external_labels,omitempty"`
-	Timeout        time.Duration     `yaml:"timeout"`
-
-	// The tenant ID to use when pushing logs to Loki (empty string means
-	// single tenant mode)
-	TenantID string `yaml:"tenant_id"`
-
-	// deprecated use StreamLagLabels from config.Config instead
-	StreamLagLabels flagext.StringSliceCSV `yaml:"stream_lag_labels"`
+// Config describes configuration for a HTTP pusher client.
+type Configs struct {
+	// lokiconfig
+	LokiConfig loki.LokiConfig `yaml:"loki,omitempty"`
+	// kafka
+	KafkaConfig kafka.KafkaConfig `yaml:"kafka,omitempty"`
+	// file system config
+	FileSystemClient filesystem.FileClientConfig `yaml:"file_system_config,omitempty"`
 }
 
 // RegisterFlags with prefix registers flags where every name is prefixed by
 // prefix. If prefix is a non-empty string, prefix should end with a period.
-func (c *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
-	f.Var(&c.URL, prefix+"client.url", "URL of log server (deprecated).")
-	f.DurationVar(&c.BatchWait, prefix+"client.batch-wait", BatchWait, "Maximum wait period before sending batch (deprecated).")
-	f.IntVar(&c.BatchSize, prefix+"client.batch-size-bytes", BatchSize, "Maximum batch size to accrue before sending (deprecated).")
-	// Default backoff schedule: 0.5s, 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s(4.267m) For a total time of 511.5s(8.5m) before logs are lost
-	f.IntVar(&c.BackoffConfig.MaxRetries, prefix+"client.max-retries", MaxRetries, "Maximum number of retires when sending batches (deprecated).")
-	f.DurationVar(&c.BackoffConfig.MinBackoff, prefix+"client.min-backoff", MinBackoff, "Initial backoff time between retries (deprecated).")
-	f.DurationVar(&c.BackoffConfig.MaxBackoff, prefix+"client.max-backoff", MaxBackoff, "Maximum backoff time between retries (deprecated).")
-	f.DurationVar(&c.Timeout, prefix+"client.timeout", Timeout, "Maximum time to wait for server to respond to a request (deprecated).")
-	f.Var(&c.ExternalLabels, prefix+"client.external-labels", "list of external labels to add to each log (e.g: --client.external-labels=lb1=v1,lb2=v2) (deprecated).")
+func (c *Configs) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
+	if c.LokiConfig.URL.URL != nil {
+		c.LokiConfig.RegisterFlagsWithPrefix(prefix, f)
+	} else if c.FileSystemClient.Path != "" {
+		c.FileSystemClient.RegisterFlagsWithPrefix(prefix, f)
+	}
 
-	f.StringVar(&c.TenantID, prefix+"client.tenant-id", "", "Tenant ID to use when pushing logs to Loki (deprecated).")
 }
 
 // RegisterFlags registers flags.
-func (c *Config) RegisterFlags(flags *flag.FlagSet) {
-	c.RegisterFlagsWithPrefix("", flags)
+func (c *Configs) RegisterFlags(flags *flag.FlagSet) {
+	if c.LokiConfig.URL.URL != nil {
+		c.LokiConfig.RegisterFlags(flags)
+	} else if c.FileSystemClient.Path != "" {
+		c.FileSystemClient.RegisterFlags(flags)
+	}
+
 }
 
 // UnmarshalYAML implement Yaml Unmarshaler
-func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
-	type raw Config
+func (c *Configs) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	type raw Configs
+
 	var cfg raw
-	if c.URL.URL != nil {
-		// we used flags to set that value, which already has sane default.
-		cfg = raw(*c)
-	} else {
-		// force sane defaults.
-		cfg = raw{
-			BackoffConfig: backoff.Config{
-				MaxBackoff: MaxBackoff,
-				MaxRetries: MaxRetries,
-				MinBackoff: MinBackoff,
-			},
-			BatchSize: BatchSize,
-			BatchWait: BatchWait,
-			Timeout:   Timeout,
-		}
+
+	cfg = raw{
+		LokiConfig:       loki.DefaultLokiConfig(),
+		KafkaConfig:      kafka.DefaultKafkaConfig(),
+		FileSystemClient: filesystem.DefaultFileSystemConfig(),
 	}
+
 
 	if err := unmarshal(&cfg); err != nil {
 		return err
 	}
 
-	*c = Config(cfg)
+	*c = Configs(cfg)
 	return nil
 }
+//
+// NewClientFromConfig return the an client according to the config
+func (c *Configs) NewClientFromConfig(clientKind ClientKind,metrics *metrics.Metrics, streamLagLabels []string,logger log.Logger) (Client, error) {
+	switch clientKind {
+	case LokiClient:
+		return loki.New(metrics, c.LokiConfig, streamLagLabels, logger)
+	case FileClient:
+		return filesystem.NewFileSystemClient(metrics, c.FileSystemClient, streamLagLabels, logger)
+	case KafkaClient:
+		return kafka.NewKafkaClient(metrics, c.KafkaConfig, streamLagLabels, logger)
+	default:
+		return nil, errors.New("unknown types of client")
+	}
+}
+
+
+

@@ -113,7 +113,10 @@ require (
 )
 
 require (
+	github.com/fsnotify/fsnotify v1.5.1
+	github.com/go-kit/kit v0.12.0
 	github.com/prometheus/common/sigv4 v0.1.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/willf/bloom v2.0.3+incompatible
 )
 
@@ -162,8 +165,6 @@ require (
 	github.com/eapache/queue v1.1.0 // indirect
 	github.com/edsrzf/mmap-go v1.1.0 // indirect
 	github.com/felixge/httpsnoop v1.0.2 // indirect
-	github.com/fsnotify/fsnotify v1.5.1 // indirect
-	github.com/go-kit/kit v0.12.0 // indirect
 	github.com/go-logr/logr v1.2.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/analysis v0.20.0 // indirect

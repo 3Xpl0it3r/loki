@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	dskit_flagext "github.com/grafana/dskit/flagext"
 
 	yaml "gopkg.in/yaml.v2"
@@ -16,8 +15,6 @@ import (
 	"github.com/grafana/loki/clients/pkg/promtail/scrapeconfig"
 	"github.com/grafana/loki/clients/pkg/promtail/server"
 	"github.com/grafana/loki/clients/pkg/promtail/targets/file"
-
-	"github.com/grafana/loki/pkg/util/flagext"
 )
 
 // Options contains cross-cutting promtail configurations
@@ -29,8 +26,8 @@ type Options struct {
 type Config struct {
 	ServerConfig server.Config `yaml:"server,omitempty"`
 	// deprecated use ClientConfigs instead
-	ClientConfig    client.Config         `yaml:"client,omitempty"`
-	ClientConfigs   []client.Config       `yaml:"clients,omitempty"`
+	ClientConfigs    client.Configs         `yaml:"clients,omitempty"`
+	//ClientConfigs   []client.Config       `yaml:"clients,omitempty"`
 	PositionsConfig positions.Config      `yaml:"positions,omitempty"`
 	ScrapeConfig    []scrapeconfig.Config `yaml:"scrape_configs,omitempty"`
 	TargetConfig    file.Config           `yaml:"target_config,omitempty"`
@@ -42,7 +39,7 @@ type Config struct {
 // prefix. If prefix is a non-empty string, prefix should end with a period.
 func (c *Config) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 	c.ServerConfig.RegisterFlagsWithPrefix(prefix, f)
-	c.ClientConfig.RegisterFlagsWithPrefix(prefix, f)
+	c.ClientConfigs.RegisterFlagsWithPrefix(prefix, f)
 	c.PositionsConfig.RegisterFlagsWithPrefix(prefix, f)
 	c.TargetConfig.RegisterFlagsWithPrefix(prefix, f)
 	c.LimitsConfig.RegisterFlagsWithPrefix(prefix, f)
@@ -62,11 +59,11 @@ func (c Config) String() string {
 }
 
 func (c *Config) Setup(l log.Logger) {
-	if c.ClientConfig.URL.URL != nil {
-		level.Warn(l).Log("msg", "use of CLI client.* and config file Client block are both deprecated in favour of the config file Clients block and will be removed in a future release")
-		// if a single client config is used we add it to the multiple client config for backward compatibility
-		c.ClientConfigs = append(c.ClientConfigs, c.ClientConfig)
-	}
+	//if c.ClientConfig.LokiConfig.URL.URL != nil {
+	//	level.Warn(l).Log("msg", "use of CLI client.* and config file Client block are both deprecated in favour of the config file Clients block and will be removed in a future release")
+	//	// if a single client config is used we add it to the multiple client config for backward compatibility
+	//	c.ClientConfigs = append(c.ClientConfigs, c.ClientConfig)
+	//}
 
 	// This is a bit crude but if the Loki Push API target is specified,
 	// force the log level to match the promtail log level
@@ -83,9 +80,9 @@ func (c *Config) Setup(l log.Logger) {
 	// which exist in both the command line arguments as well as the yaml, and while this is
 	// not typically the order of precedence, the assumption here is someone providing a specific config in
 	// yaml is doing so explicitly to make a key specific to a client.
-	if len(c.ClientConfig.ExternalLabels.LabelSet) > 0 {
-		for i := range c.ClientConfigs {
-			c.ClientConfigs[i].ExternalLabels = flagext.LabelSet{LabelSet: c.ClientConfig.ExternalLabels.LabelSet.Merge(c.ClientConfigs[i].ExternalLabels.LabelSet)}
-		}
-	}
+	//if len(c.ClientConfig.ExternalLabels.LabelSet) > 0 {
+	//	for i := range c.ClientConfigs {
+	//		c.ClientConfigs[i].ExternalLabels = flagext.LabelSet{LabelSet: c.ClientConfig.ExternalLabels.LabelSet.Merge(c.ClientConfigs[i].ExternalLabels.LabelSet)}
+	//	}
+	//}
 }

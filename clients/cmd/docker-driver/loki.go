@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"sync"
 
 	"github.com/docker/docker/daemon/logger"
@@ -38,7 +39,7 @@ func New(logCtx logger.Info, logger log.Logger) (logger.Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := client.NewMetrics(prometheus.DefaultRegisterer, nil)
+	m := metrics.NewMetrics(prometheus.DefaultRegisterer, nil)
 	c, err := client.New(m, cfg.clientConfig, nil, logger)
 	if err != nil {
 		return nil, err

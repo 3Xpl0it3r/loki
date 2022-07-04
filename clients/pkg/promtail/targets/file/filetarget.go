@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+
 	"github.com/bmatcuk/doublestar"
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -15,8 +17,8 @@ import (
 	fsnotify "gopkg.in/fsnotify.v1"
 
 	"github.com/grafana/loki/clients/pkg/promtail/api"
-	"github.com/grafana/loki/clients/pkg/promtail/client"
 	"github.com/grafana/loki/clients/pkg/promtail/positions"
+
 	"github.com/grafana/loki/clients/pkg/promtail/targets/target"
 )
 
@@ -76,6 +78,10 @@ type FileTarget struct {
 	tails map[string]*tailer
 
 	targetConfig *Config
+
+	// when pod CrackBackOff, then new container and the previous  container  are not same
+	// in this case ,we should delete the target, and create new one
+	preContainerId string
 }
 
 // NewFileTarget create a new FileTarget.
@@ -331,7 +337,7 @@ func (t *FileTarget) stopTailingAndRemovePosition(ps []string) {
 			delete(t.tails, p)
 		}
 		if h, ok := t.handler.(api.InstrumentedEntryHandler); ok {
-			h.UnregisterLatencyMetric(prometheus.Labels{client.LatencyLabel: p})
+			h.UnregisterLatencyMetric(prometheus.Labels{metrics.LatencyLabel: p})
 		}
 	}
 }
