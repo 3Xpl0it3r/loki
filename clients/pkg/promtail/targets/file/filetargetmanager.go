@@ -3,6 +3,7 @@ package file
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -336,7 +337,6 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 				path = model.LabelValue(hostTargetSplit[1])
 
 			} else { // case for kubernetes
-				// 检测是否是k8s， 既是否包含podContainerId的标签
 				containerId, ok = labels[podContainerIdLabel]
 				labels["containerId"] = containerId
 				if ok {
@@ -376,7 +376,7 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 			//	key = fmt.Sprintf("%s:%s", key, pathExclude)
 			//}
 			targets[key] = struct{}{}
-			if _, ok := s.targets[key]; ok { // 已经存在，跳过
+			if _, ok := s.targets[key]; ok { // target is existed,skip add 
 				dropped = append(dropped, target.NewDroppedTarget("ignoring target, already exists", discoveredLabels))
 				level.Debug(s.log).Log("msg", "ignoring target, already exists", "labels", labels.String())
 				s.metrics.failedTargets.WithLabelValues("exists").Inc()
