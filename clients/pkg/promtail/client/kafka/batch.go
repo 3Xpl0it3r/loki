@@ -112,6 +112,8 @@ func (t TopicKind) topic() string {
 		return "promtail-json-jsonApp"
 	case TopicKindFake:
 		return "promtail-fake"
+	case TopicKindSysDmesg:
+		return "promtail-sysdmesg"
 	default:
 		return "promtail-known"
 	}

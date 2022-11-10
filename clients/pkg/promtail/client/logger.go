@@ -2,7 +2,7 @@ package client
 
 import (
 	"fmt"
-	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	clientmetrics "github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"runtime"
 	"sync"
@@ -36,7 +36,7 @@ type logger struct {
 }
 
 // NewLogger creates a new client logger that logs entries instead of sending them.
-func NewLogger(metrics *metrics.Metrics, streamLogLabels []string, log log.Logger, cfgs Configs) (Client, error) {
+func NewLogger(metrics *clientmetrics.Metrics, streamLogLabels []string, log log.Logger, cfgs Configs) (Client, error) {
 	// make sure the clients config is valid
 	c, err := NewMulti(metrics, streamLogLabels, log, cfgs)
 	if err != nil {

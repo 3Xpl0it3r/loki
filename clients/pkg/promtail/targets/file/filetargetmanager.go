@@ -97,6 +97,7 @@ func NewFileTargetManager(
 			continue
 		}
 
+        // stage 组合
 		pipeline, err := stages.NewPipeline(log.With(logger, "component", "file_pipeline"), cfg.PipelineStages, &cfg.JobName, reg)
 		if err != nil {
 			return nil, err
@@ -376,7 +377,7 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 			//	key = fmt.Sprintf("%s:%s", key, pathExclude)
 			//}
 			targets[key] = struct{}{}
-			if _, ok := s.targets[key]; ok { // target is existed,skip add 
+			if _, ok := s.targets[key]; ok { // target is existed,skip add
 				dropped = append(dropped, target.NewDroppedTarget("ignoring target, already exists", discoveredLabels))
 				level.Debug(s.log).Log("msg", "ignoring target, already exists", "labels", labels.String())
 				s.metrics.failedTargets.WithLabelValues("exists").Inc()

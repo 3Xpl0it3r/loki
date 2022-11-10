@@ -2,13 +2,14 @@ package filesystem
 
 import (
 	"context"
+	"os"
+	"sync"
+
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
 	"github.com/grafana/loki/clients/pkg/promtail/api"
 	clientsmetrics "github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"github.com/prometheus/common/model"
-	"os"
-	"sync"
 )
 
 // const label is used for mark directory and filename
@@ -26,27 +27,25 @@ var (
 	defaultInstanceName   = "default_instance"
 )
 
-func init(){
+func init() {
 	once.Do(func() {
 		defaultInstanceName, _ = os.Hostname()
 	})
 }
 
-
 // client 描述客户端所需要的信息
 type client struct {
-	cfg     FileClientConfig
-	metrics *clientsmetrics.Metrics
+	cfg             FileClientConfig
+	metrics         *clientsmetrics.Metrics
 	streamLagLabels []string
-	logger  log.Logger
-	entries chan api.Entry // 接收来自client的entry
+	logger          log.Logger
+	entries         chan api.Entry // 接收来自client的entry
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	wg   sync.WaitGroup
 	once sync.Once
-
 
 	manager *Manager
 }
@@ -55,14 +54,14 @@ type client struct {
 //
 func NewFileSystemClient(metrics *clientsmetrics.Metrics, cfg FileClientConfig, streamLagLabels []string, logger log.Logger) (*client, error) {
 	client := &client{
-		cfg:     cfg,
-		logger:  log.With(logger, "client_type", "filesystem"),
-		entries: make(chan api.Entry),
+		cfg:             cfg,
+		logger:          log.With(logger, "client_type", "filesystem"),
+		entries:         make(chan api.Entry),
 		streamLagLabels: streamLagLabels,
-		wg:      sync.WaitGroup{},
-		once:    sync.Once{},
-		manager: newHandlerManager(),
-        metrics: metrics,
+		wg:              sync.WaitGroup{},
+		once:            sync.Once{},
+		manager:         newHandlerManager(),
+		metrics:         metrics,
 	}
 	client.ctx, client.cancel = context.WithCancel(context.Background())
 	// run client main loop
@@ -103,7 +102,7 @@ func (c *client) send(e *api.Entry) {
 			// if register failed, then destroy the handler, return
 			handler.Stop()
 			level.Error(c.logger).Log("msg", "register failed", "err", err.Error())
-			goto  GC
+			goto GC
 		}
 	}
 	handler.Receiver() <- e.Line
@@ -120,7 +119,7 @@ func (c *client) Stop() {
 		close(c.entries)
 		c.cancel()
 	})
-	if err := c.manager.AwaitComplete();err != nil{
+	if err := c.manager.AwaitComplete(); err != nil {
 		// todo log
 	}
 	c.wg.Wait()
@@ -130,8 +129,7 @@ func (c *client) StopNow() {
 	c.Stop()
 }
 
-
-func(c *client)Name()string{
+func (c *client) Name() string {
 	// this should return the path
 	return "filesystem"
 }

@@ -7,7 +7,7 @@ import (
 	"github.com/grafana/loki/clients/pkg/promtail/client/filesystem"
 	"github.com/grafana/loki/clients/pkg/promtail/client/kafka"
 	"github.com/grafana/loki/clients/pkg/promtail/client/loki"
-	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	clientmetrics "github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"github.com/pkg/errors"
 )
 
@@ -87,7 +87,7 @@ func (c *Configs) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 //
 // NewClientFromConfig return the an client according to the config
-func (c *Configs) NewClientFromConfig(clientKind ClientKind,metrics *metrics.Metrics, streamLagLabels []string,logger log.Logger) (Client, error) {
+func (c *Configs) NewClientFromConfig(clientKind ClientKind,metrics *clientmetrics.Metrics, streamLagLabels []string,logger log.Logger) (Client, error) {
 	switch clientKind {
 	case LokiClient:
 		return loki.New(metrics, c.LokiConfig, streamLagLabels, logger)

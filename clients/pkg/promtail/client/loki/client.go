@@ -6,15 +6,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/grafana/dskit/backoff"
-	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
-	"github.com/prometheus/client_golang/prometheus"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/grafana/dskit/backoff"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/sirupsen/logrus"
 
 	"github.com/prometheus/prometheus/promql/parser"
 
@@ -40,7 +42,7 @@ const (
 
 	LatencyLabel = "filename"
 	HostLabel    = "host"
-	ClientLabel = "client"
+	ClientLabel  = "client"
 )
 
 const (
@@ -53,12 +55,12 @@ var UserAgent = fmt.Sprintf("promtail/%s", version.Version)
 
 // Client for pushing logs in snappy-compressed protos over HTTP.
 type client struct {
-	metrics *metrics.Metrics
+	metrics         *metrics.Metrics
 	streamLagLabels []string
-	logger  log.Logger
-	cfg     LokiConfig
-	client  *http.Client
-	entries chan api.Entry
+	logger          log.Logger
+	cfg             LokiConfig
+	client          *http.Client
+	entries         chan api.Entry
 
 	once sync.Once
 	wg   sync.WaitGroup
@@ -71,18 +73,18 @@ type client struct {
 }
 
 // New makes a new Client.
-func New(metrics *metrics.Metrics, cfg LokiConfig, streamLagLabels []string,logger log.Logger) (*client, error) {
+func New(metrics *metrics.Metrics, cfg LokiConfig, streamLagLabels []string, logger log.Logger) (*client, error) {
 	if cfg.URL.URL == nil {
 		return nil, errors.New("client needs target URL")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c := &client{
-		logger:  log.With(logger, "component", "client", "host", cfg.URL.Host),
-		cfg:     cfg,
+		logger:          log.With(logger, "component", "client", "host", cfg.URL.Host),
+		cfg:             cfg,
 		streamLagLabels: streamLagLabels,
-		entries: make(chan api.Entry),
-		metrics: metrics,
+		entries:         make(chan api.Entry),
+		metrics:         metrics,
 
 		externalLabels: cfg.ExternalLabels.LabelSet,
 		ctx:            ctx,
@@ -147,9 +149,12 @@ func (c *client) run() {
 			if !ok {
 				return
 			}
+			logrus.Infof("debug labels: %v", e.Labels)
+			logrus.Warnf("debug line: %v", e.Line)
 
 			e, tenantID := c.processEntry(e)
 			batch, ok := batches[tenantID]
+			// logrus.Infof("debug label: %v", e.Line)
 
 			// If the batch doesn't exist yet, we create a new one with the entry
 			if !ok {
@@ -229,10 +234,10 @@ func (c *client) sendBatch(tenantID string, batch *batch) {
 					return
 				}
 				var lblSet = make(prometheus.Labels)
-				for _,lbl := range c.streamLagLabels{
+				for _, lbl := range c.streamLagLabels {
 					// labels from streamLaglabels may not be found but we still need empty value
 					value := ""
-					for i := range lbls{
+					for i := range lbls {
 						if lbls[i].Name == lbl {
 							value = lbls[i].Name
 						}
@@ -338,8 +343,6 @@ func (c *client) processEntry(e api.Entry) (api.Entry, string) {
 	if len(c.externalLabels) > 0 {
 		e.Labels = c.externalLabels.Merge(e.Labels)
 	}
-	var custom model.LabelSet = map[model.LabelName]model.LabelValue{model.LabelName("test"): model.LabelValue("hh")}
-	e.Labels = custom.Merge(e.Labels)
 	tenantID := c.getTenantID(e.Labels)
 	return e, tenantID
 }

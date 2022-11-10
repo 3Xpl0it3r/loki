@@ -3,9 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 	"os"
 	"reflect"
+
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
 
 	// embed time zone data
 	_ "time/tzdata"
