@@ -24,7 +24,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/notifier"
 	promRules "github.com/prometheus/prometheus/rules"
@@ -35,6 +34,7 @@ import (
 	"github.com/grafana/dskit/tenant"
 
 	"github.com/grafana/loki/pkg/logproto"
+	"github.com/grafana/loki/pkg/ruler/config"
 	"github.com/grafana/loki/pkg/ruler/rulespb"
 	"github.com/grafana/loki/pkg/ruler/rulestore"
 	"github.com/grafana/loki/pkg/util"
@@ -68,6 +68,11 @@ const (
 
 	// errors
 	errListAllUser = "unable to list the ruler users"
+
+	// Alertmanager default values
+	alertmanagerRefreshIntervalDefault           = 1 * time.Minute
+	alertmanagerNotificationQueueCapacityDefault = 10000
+	alertmanagerNotificationTimeoutDefault       = 10 * time.Second
 )
 
 // Config is the configuration for the recording rules server.
@@ -87,22 +92,8 @@ type Config struct {
 	// Path to store rule files for prom manager.
 	RulePath string `yaml:"rule_path"`
 
-	// URL of the Alertmanager to send notifications to.
-	AlertmanagerURL string `yaml:"alertmanager_url"`
-	// Whether to use DNS SRV records to discover Alertmanager.
-	AlertmanagerDiscovery bool `yaml:"enable_alertmanager_discovery"`
-	// How long to wait between refreshing the list of Alertmanager based on DNS service discovery.
-	AlertmanagerRefreshInterval time.Duration `yaml:"alertmanager_refresh_interval"`
-	// Enables the ruler notifier to use the Alertmananger V2 API.
-	AlertmanangerEnableV2API bool `yaml:"enable_alertmanager_v2"`
-	// Configuration for alert relabeling.
-	AlertRelabelConfigs []*relabel.Config `yaml:"alert_relabel_configs,omitempty"`
-	// Capacity of the queue for notifications to be sent to the Alertmanager.
-	NotificationQueueCapacity int `yaml:"notification_queue_capacity"`
-	// HTTP timeout duration when sending notifications to the Alertmanager.
-	NotificationTimeout time.Duration `yaml:"notification_timeout"`
-	// Client configs for interacting with the Alertmanager
-	Notifier NotifierConfig `yaml:"alertmanager_client"`
+	// Global alertmanager config.
+	config.AlertManagerConfig `yaml:",inline"`
 
 	// Max time to tolerate outage for restoring "for" state of alert.
 	OutageTolerance time.Duration `yaml:"for_outage_tolerance"`
@@ -171,10 +162,10 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 
 	f.StringVar(&cfg.AlertmanagerURL, "ruler.alertmanager-url", "", "Comma-separated list of URL(s) of the Alertmanager(s) to send notifications to. Each Alertmanager URL is treated as a separate group in the configuration. Multiple Alertmanagers in HA per group can be supported by using DNS resolution via -ruler.alertmanager-discovery.")
 	f.BoolVar(&cfg.AlertmanagerDiscovery, "ruler.alertmanager-discovery", false, "Use DNS SRV records to discover Alertmanager hosts.")
-	f.DurationVar(&cfg.AlertmanagerRefreshInterval, "ruler.alertmanager-refresh-interval", 1*time.Minute, "How long to wait between refreshing DNS resolutions of Alertmanager hosts.")
+	f.DurationVar(&cfg.AlertmanagerRefreshInterval, "ruler.alertmanager-refresh-interval", alertmanagerRefreshIntervalDefault, "How long to wait between refreshing DNS resolutions of Alertmanager hosts.")
 	f.BoolVar(&cfg.AlertmanangerEnableV2API, "ruler.alertmanager-use-v2", false, "If enabled requests to Alertmanager will utilize the V2 API.")
-	f.IntVar(&cfg.NotificationQueueCapacity, "ruler.notification-queue-capacity", 10000, "Capacity of the queue for notifications to be sent to the Alertmanager.")
-	f.DurationVar(&cfg.NotificationTimeout, "ruler.notification-timeout", 10*time.Second, "HTTP timeout duration when sending notifications to the Alertmanager.")
+	f.IntVar(&cfg.NotificationQueueCapacity, "ruler.notification-queue-capacity", alertmanagerNotificationQueueCapacityDefault, "Capacity of the queue for notifications to be sent to the Alertmanager.")
+	f.DurationVar(&cfg.NotificationTimeout, "ruler.notification-timeout", alertmanagerNotificationTimeoutDefault, "HTTP timeout duration when sending notifications to the Alertmanager.")
 
 	f.DurationVar(&cfg.SearchPendingFor, "ruler.search-pending-for", 5*time.Minute, "Time to spend searching for a pending ruler when shutting down.")
 	f.BoolVar(&cfg.EnableSharding, "ruler.enable-sharding", false, "Distribute rule evaluation using ring backend")
@@ -209,6 +200,7 @@ type MultiTenantManager interface {
 }
 
 // Ruler evaluates rules.
+//
 //	+---------------------------------------------------------------+
 //	|                                                               |
 //	|                   Query       +-------------+                 |

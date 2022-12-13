@@ -193,7 +193,7 @@ func (t *Target) process(r io.Reader, logStream string) {
 			lb.Set(string(k), string(v))
 		}
 		lb.Set(dockerLabelLogStream, logStream)
-		processed := relabel.Process(lb.Labels(), t.relabelConfig...)
+		processed := relabel.Process(lb.Labels(nil), t.relabelConfig...)
 
 		filtered := make(model.LabelSet)
 		for _, lbl := range processed {
@@ -217,7 +217,7 @@ func (t *Target) process(r io.Reader, logStream string) {
 
 // startIfNotRunning starts processing container logs. The operation is idempotent , i.e. the processing cannot be started twice.
 func (t *Target) startIfNotRunning() {
-	if t.running.CAS(false, true) {
+	if t.running.CompareAndSwap(false, true) {
 		level.Debug(t.logger).Log("msg", "starting process loop", "container", t.containerName)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.cancel = cancel
@@ -251,9 +251,13 @@ func (t *Target) Labels() model.LabelSet {
 
 // Details returns target-specific details.
 func (t *Target) Details() interface{} {
+	var errMsg string
+	if t.err != nil {
+		errMsg = t.err.Error()
+	}
 	return map[string]string{
 		"id":       t.containerName,
-		"error":    t.err.Error(),
+		"error":    errMsg,
 		"position": t.positions.GetString(positions.CursorKey(t.containerName)),
 		"running":  strconv.FormatBool(t.running.Load()),
 	}

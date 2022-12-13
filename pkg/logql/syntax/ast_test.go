@@ -3,6 +3,7 @@ package syntax
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
@@ -71,6 +72,7 @@ func Test_SampleExpr_String(t *testing.T) {
 		`rate( ( {job="mysql"} |="error" !="timeout" ) [10s] )`,
 		`absent_over_time( ( {job="mysql"} |="error" !="timeout" ) [10s] )`,
 		`absent_over_time( ( {job="mysql"} |="error" !="timeout" ) [10s] offset 10d )`,
+		`vector(123)`,
 		`sum without(a) ( rate ( ( {job="mysql"} |="error" !="timeout" ) [10s] ) )`,
 		`sum by(a) (rate( ( {job="mysql"} |="error" !="timeout" ) [10s] ) )`,
 		`sum(count_over_time({job="mysql"}[5m]))`,
@@ -151,6 +153,7 @@ func Test_SampleExpr_String(t *testing.T) {
 		)
 		`,
 		`10 / (5/2)`,
+		`(count_over_time({job="postgres"}[5m])/2) or vector(2)`,
 		`10 / (count_over_time({job="postgres"}[5m])/2)`,
 		`{app="foo"} | json response_status="response.status.code", first_param="request.params[0]"`,
 		`label_replace(
@@ -179,22 +182,52 @@ func Test_SampleExpr_String(t *testing.T) {
 	}
 }
 
+func Test_SampleExpr_String_Fail(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []string{
+		`topk(0, sum(rate({region="us-east1"}[5m])) by (name))`,
+		`topk by (name)(0,sum(rate({region="us-east1"}[5m])))`,
+		`bottomk(0, sum(rate({region="us-east1"}[5m])) by (name))`,
+		`bottomk by (name)(0,sum(rate({region="us-east1"}[5m])))`,
+	} {
+		t.Run(tc, func(t *testing.T) {
+			_, err := ParseExpr(tc)
+			require.ErrorContains(t, err, "parse error : invalid parameter (must be greater than 0)")
+		})
+	}
+}
+
 func TestMatcherGroups(t *testing.T) {
 	for i, tc := range []struct {
 		query string
-		exp   [][]*labels.Matcher
+		exp   []MatcherRange
 	}{
 		{
 			query: `{job="foo"}`,
-			exp: [][]*labels.Matcher{
-				{labels.MustNewMatcher(labels.MatchEqual, "job", "foo")},
+			exp: []MatcherRange{
+				{
+					Matchers: []*labels.Matcher{
+						labels.MustNewMatcher(labels.MatchEqual, "job", "foo"),
+					},
+				},
 			},
 		},
 		{
-			query: `count_over_time({job="foo"}[5m]) / count_over_time({job="bar"}[5m])`,
-			exp: [][]*labels.Matcher{
-				{labels.MustNewMatcher(labels.MatchEqual, "job", "foo")},
-				{labels.MustNewMatcher(labels.MatchEqual, "job", "bar")},
+			query: `count_over_time({job="foo"}[5m]) / count_over_time({job="bar"}[5m] offset 10m)`,
+			exp: []MatcherRange{
+				{
+					Interval: 5 * time.Minute,
+					Matchers: []*labels.Matcher{
+						labels.MustNewMatcher(labels.MatchEqual, "job", "foo"),
+					},
+				},
+				{
+					Interval: 5 * time.Minute,
+					Offset:   10 * time.Minute,
+					Matchers: []*labels.Matcher{
+						labels.MustNewMatcher(labels.MatchEqual, "job", "bar"),
+					},
+				},
 			},
 		},
 	} {
