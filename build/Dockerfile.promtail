@@ -1,0 +1,22 @@
+FROM golang:1.18.4 as base 
+
+ENV GOPROXY "https://goproxy.cn"
+ENV CGO_ENABLED=0
+
+RUN mkdir /opt/loki
+
+copy . /opt/loki
+
+RUN cd /opt/loki/clients/cmd/promtail && go build -ldflags "-w -s" -buildvcs=false && chmod +x promtail
+
+
+FROM alpine
+
+COPY --from=base /opt/loki/clients/cmd/promtail/promtail /opt/promtail
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories && apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo "Asia/Shanghai" > /etc/timezone && apk add libc6-compat 
+
+ADD build/Readme /root/
+
+ENTRYPOINT ["/opt/promtail"]
+

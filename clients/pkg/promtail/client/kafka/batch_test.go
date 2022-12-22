@@ -29,7 +29,7 @@ var testCases = []struct{
 		apiEntry: api.Entry{Labels: model.LabelSet{FilenameLabel: model.LabelValue(randString(TopicKindAccessMongo))},
 			Entry: logproto.Entry{Timestamp: time.Unix(1, 0).UTC(), Line: "line1"}},
 		expectKafkaMessage: kafka.ProducerMessage{
-			Topic:     TopicKindAccessMongo.topic(),
+			Topic:     TopicKindAccessMongo.String(),
 			Key:       kafka.ByteEncoder("fakeControllerName"),
 			Value:     nil,
 			Timestamp: time.Unix(1,0).UTC(),
@@ -41,7 +41,7 @@ var testCases = []struct{
 		apiEntry: api.Entry{Labels: model.LabelSet{FilenameLabel: model.LabelValue(randString(TopicKindAccessDubbo))},
 			Entry: logproto.Entry{Timestamp: time.Unix(2,0).UTC(),Line: "line2"}},
 		expectKafkaMessage: kafka.ProducerMessage{
-			Topic:     TopicKindAccessDubbo.topic(),
+			Topic:     TopicKindAccessDubbo.String(),
 			Key:       kafka.ByteEncoder("fakeControllerName"),
 			Timestamp: time.Unix(2,0).UTC(),
 		},
@@ -52,7 +52,7 @@ var testCases = []struct{
 		apiEntry: api.Entry{Labels: model.LabelSet{FilenameLabel: model.LabelValue(randString(TopicKindAccessRest))},
 			Entry: logproto.Entry{Timestamp: time.Unix(3,0).UTC(), Line: "line3"}},
 		expectKafkaMessage: kafka.ProducerMessage{
-			Topic:     TopicKindAccessRest.topic(),
+			Topic:     TopicKindAccessRest.String(),
 			Key:       kafka.ByteEncoder("fakeControllerName"),
 			Timestamp: time.Unix(3,0).UTC(),
 		},
@@ -65,7 +65,7 @@ var testCases = []struct{
 		expectKafkaMessage: kafka.ProducerMessage{
 			Timestamp: time.Unix(4,0).UTC(),
 			Value: kafka.ByteEncoder([]byte("line4")),
-			Topic: TopicKindAppJson.topic(),
+			Topic: TopicKindAppJson.String(),
 			Key: kafka.ByteEncoder("fakeControllerName")},
 	},
 	{
@@ -74,7 +74,7 @@ var testCases = []struct{
 		apiEntry: api.Entry{Labels: model.LabelSet{FilenameLabel: model.LabelValue(randString(TopicKindJavaMemory))},
 			Entry: logproto.Entry{Timestamp: time.Unix(5,0).UTC(), Line: "line5"}},
 		expectKafkaMessage: kafka.ProducerMessage{
-			Topic:     TopicKindJavaMemory.topic(),
+			Topic:     TopicKindJavaMemory.String(),
 			Key:       kafka.ByteEncoder("fakeControllerName"),
 			Timestamp: time.Unix(5,0).UTC(),
 		},

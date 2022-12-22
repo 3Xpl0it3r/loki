@@ -42,59 +42,19 @@ const (
 
 	// common log
 	TopicKindAppJson TopicKind = "jsonApp" // buf
-	unknown
 	TopicKindUnknown TopicKind = "promtail-unknown"
+
+	TopicKindIpaasApp TopicKind = "app_json_logs/application"
 
 	// system log
 	TopicKindSysDmesg TopicKind = "dmesg"
 
 	TopicKindFake TopicKind = "fake.log"
+
+	TopicKindDockerStdout TopicKind = "-json.log"
 )
 
-//  getTopicKindFromEntry
-//  用来区分topic 以及 topic类型
-func getTopicKindFromEntry(e *api.Entry) (topKind TopicKind, isCommon bool) {
-	filenameLabelValue, ok := e.Labels[FilenameLabel]
-	if !ok {
-		topKind, isCommon = TopicKindUnknown, false
-		return
-	}
-
-	filenameSlice := strings.Split(string(filenameLabelValue), "/")
-	filename := filenameSlice[len(filenameSlice)-1]
-	if strings.Contains(filename, "localhost_access_log") {
-		topKind, isCommon = TopicKindUnknown, true
-		return
-	}
-	if strings.Contains(filename, string(TopicKindAccessMongo)) {
-		topKind, isCommon = TopicKindAccessMongo, true
-	} else if strings.Contains(filename, string(TopicKindAccessDubbo)) {
-		topKind, isCommon = TopicKindAccessDubbo, true
-	} else if strings.Contains(filename, string(TopicKindAccessRest)) {
-		topKind, isCommon = TopicKindAccessRest, true
-	} else if strings.Contains(filename, string(TopicKindGc)) {
-		topKind, isCommon = TopicKindGc, true
-	} else if strings.Contains(filename, string(TopicKindJavaMemory)) {
-		topKind, isCommon = TopicKindJavaMemory, true
-	} else if strings.Contains(filename, string(TopicKindAppJson)) { // appJson is not common
-		topKind, isCommon = TopicKindAppJson, false
-	} else if strings.Contains(filename, string(TopicKindFake)) {
-		topKind, isCommon = TopicKindFake, true
-	} else if strings.Contains(filename, string(TopicKindSysDmesg)) {
-		topKind, isCommon = TopicKindSysDmesg, true
-	} else if strings.Contains(filename, string(TopicKindStackDubbo)) {
-		topKind, isCommon = TopicKindStackDubbo, true
-	} else {
-		topKind, isCommon = TopicKindUnknown, false
-	}
-	return
-}
-
-const (
-	MaxLogSize = 1024 * 1024
-)
-
-func (t TopicKind) topic() string {
+func (t TopicKind) String() string {
 	switch t {
 	case TopicKindAccessMongo:
 		return "promtail-accessmongo"
@@ -114,10 +74,66 @@ func (t TopicKind) topic() string {
 		return "promtail-fake"
 	case TopicKindSysDmesg:
 		return "promtail-sysdmesg"
+	case TopicKindIpaasApp:
+		return "promtail-ipaas-app"
+	case TopicKindDockerStdout:
+		return "promtail-docker"
 	default:
 		return "promtail-known"
 	}
 }
+
+//  getTopicKindFromEntry
+//  用来区分topic 以及 topic类型
+func getTopicKindFromEntry(e *api.Entry) (topKind TopicKind, shouldWrapJson bool) {
+	filenameLabelValue, ok := e.Labels[FilenameLabel]
+	if !ok {
+		topKind, shouldWrapJson = TopicKindUnknown, false
+		return
+	}
+
+	filenameSlice := strings.Split(string(filenameLabelValue), "/")
+	filename := filenameSlice[len(filenameSlice)-1]
+	if strings.Contains(filename, "localhost_access_log") {
+		topKind, shouldWrapJson = TopicKindUnknown, true
+		return
+	}
+
+	if strings.HasSuffix(filename, string(TopicKindDockerStdout)) {
+		return TopicKindDockerStdout, true
+	}
+
+	if strings.Contains(string(filenameLabelValue), string(TopicKindIpaasApp)) {
+		return TopicKindIpaasApp, false
+	}
+
+	if strings.Contains(filename, string(TopicKindAccessMongo)) {
+		topKind, shouldWrapJson = TopicKindAccessMongo, true
+	} else if strings.Contains(filename, string(TopicKindAccessDubbo)) {
+		topKind, shouldWrapJson = TopicKindAccessDubbo, true
+	} else if strings.Contains(filename, string(TopicKindAccessRest)) {
+		topKind, shouldWrapJson = TopicKindAccessRest, true
+	} else if strings.Contains(filename, string(TopicKindGc)) {
+		topKind, shouldWrapJson = TopicKindGc, true
+	} else if strings.Contains(filename, string(TopicKindJavaMemory)) {
+		topKind, shouldWrapJson = TopicKindJavaMemory, true
+	} else if strings.Contains(filename, string(TopicKindAppJson)) { // appJson is not common
+		topKind, shouldWrapJson = TopicKindAppJson, false
+	} else if strings.Contains(filename, string(TopicKindFake)) {
+		topKind, shouldWrapJson = TopicKindFake, true
+	} else if strings.Contains(filename, string(TopicKindSysDmesg)) {
+		topKind, shouldWrapJson = TopicKindSysDmesg, true
+	} else if strings.Contains(filename, string(TopicKindStackDubbo)) {
+		topKind, shouldWrapJson = TopicKindStackDubbo, true
+	} else {
+		topKind, shouldWrapJson = TopicKindUnknown, false
+	}
+	return
+}
+
+const (
+	MaxLogSize = 1024 * 1024
+)
 
 type kafkaStream struct {
 	Messages []*kafka.ProducerMessage
@@ -154,7 +170,7 @@ func newBatch(entries ...api.Entry) *batch {
 // add an entry to the batch
 func (b *batch) add(entry api.Entry) {
 	// unknown topicKind will be dropped
-	topicKind, isCommon := getTopicKindFromEntry(&entry)
+	topicKind, shouldWrapJson := getTopicKindFromEntry(&entry)
 	if topicKind == TopicKindUnknown {
 		return
 	}
@@ -163,12 +179,12 @@ func (b *batch) add(entry api.Entry) {
 	// Append the entry to an already existing stream (if any)
 	labels := labelsMapToString(entry.Labels, ReservedLabelTenantID)
 	if streams, ok := b.kafkaStreams[labels]; ok {
-		streams.Messages = append(streams.Messages, entryToKafkaMessage(entry, topicKind, isCommon))
+		streams.Messages = append(streams.Messages, entryToKafkaMessage(entry, topicKind, shouldWrapJson))
 		return
 	}
 
 	// Add kafka message as new message
-	b.kafkaStreams[labels] = &kafkaStream{Messages: []*kafka.ProducerMessage{entryToKafkaMessage(entry, topicKind, isCommon)}}
+	b.kafkaStreams[labels] = &kafkaStream{Messages: []*kafka.ProducerMessage{entryToKafkaMessage(entry, topicKind, shouldWrapJson)}}
 }
 
 func labelsMapToString(ls model.LabelSet, without ...model.LabelName) string {
@@ -219,7 +235,7 @@ func (b *batch) encode() ([]*kafka.ProducerMessage, int, error) {
 }
 
 //go:inline
-func entryToKafkaMessage(e api.Entry, topKind TopicKind, isCommon bool) *kafka.ProducerMessage {
+func entryToKafkaMessage(e api.Entry, topKind TopicKind, shouldWrapJson bool) *kafka.ProducerMessage {
 	req := e.Labels.Merge(map[model.LabelName]model.LabelValue{
 		"timestamp": model.LabelValue(e.Timestamp.String()),
 		"message":   model.LabelValue(e.Line),
@@ -227,7 +243,7 @@ func entryToKafkaMessage(e api.Entry, topKind TopicKind, isCommon bool) *kafka.P
 	})
 
 	var value []byte
-	if isCommon == true {
+	if shouldWrapJson == true {
 		value, _ = json.Marshal(req)
 	} else {
 		value = []byte(e.Line)
@@ -236,7 +252,7 @@ func entryToKafkaMessage(e api.Entry, topKind TopicKind, isCommon bool) *kafka.P
 	return &kafka.ProducerMessage{
 		Timestamp: e.Timestamp,
 		Value:     kafka.ByteEncoder(value),
-		Topic:     topKind.topic(),
+		Topic:     topKind.String(),
 		Key:       kafka.ByteEncoder(deploymentNameFromEntry(&e)),
 	}
 }

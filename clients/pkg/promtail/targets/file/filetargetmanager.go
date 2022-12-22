@@ -97,7 +97,7 @@ func NewFileTargetManager(
 			continue
 		}
 
-        // stage 组合
+		// stage 组合
 		pipeline, err := stages.NewPipeline(log.With(logger, "component", "file_pipeline"), cfg.PipelineStages, &cfg.JobName, reg)
 		if err != nil {
 			return nil, err
@@ -506,40 +506,35 @@ func hostname() (string, error) {
 
 // getCustomPodLogPathFromDockerInspect get some custom log in pod by combine some hard code with some path get from docker inspect
 func getCustomPodLogPathFromDockerInspect(inspect *types.ContainerJSON) string {
-	// for tomcat about logs is located at docker's data path
-	var (
-		tomcatAccessLog   = "/usr/local/tomcat/logs/localhost_access_log.log"
-		tomcatCatalinaLog = "/usr/local/tomcat/logs/catalina.out"
-		jsonAppLog        = "/root/logs/*/appJson/jsonApp.*.log"
 
-		accessRestLog  = "/root/logs/*/access.*.log"
-		accessDubboLog = "/root/logs/*/dubboAccess.*.log"
-		mongoLog       = "/root/logs/*/sql.*.log"
-		gcLog          = "/root/logs/*/gc.log"
-		javaMemory     = "/root/logs/*/memory.log"
-		application    = "/root/logs/*/application.log"
-		appLog         = "/root/logs/*/app.log"
-		stackDubboLog  = "/root/logs/*/DubboStack.*.log"
-		providenceLog  = "/root/logs/*/providence.log"
-	)
-
-	var pathString = "{" + inspect.LogPath + ","
-	//var pathString string = "{"
-	if graphDiff, err := dockerutil.GetDockerDataPath(inspect); err == nil {
-		pathString += path.Join(graphDiff, tomcatCatalinaLog) + "," +
-			path.Join(graphDiff, appLog) + "," +
-			path.Join(graphDiff, tomcatAccessLog) + "," +
-			path.Join(graphDiff, gcLog) + "," +
-			path.Join(graphDiff, jsonAppLog) + "," +
-			path.Join(graphDiff, accessRestLog) + "," +
-			path.Join(graphDiff, accessDubboLog) + "," +
-			path.Join(graphDiff, mongoLog) + "," +
-			path.Join(graphDiff, javaMemory) + "," +
-			path.Join(graphDiff, application) + "," +
-			path.Join(graphDiff, stackDubboLog) + "," +
-			path.Join(graphDiff, providenceLog) + ","
+	var logThatNeedGather = []string{
+		// tomcat access
+		"/usr/local/tomcat/logs/localhost_access_log.log",
+		// tomcat catalinas
+		"/usr/local/tomcat/logs/catalina.out",
+		// Apaas appjsonlog
+		"/root/logs/*/appJson/jsonApp.*.log",
+		// Ipaas appjsonlog
+		"/root/logs/*/app_json_logs/application.*.log",
+		// apaaas logs
+		"/root/logs/*/access.*.log",
+		// dubbo
+		"/root/logs/*/dubboAccess.*.log",
+		"/root/logs/*/sql.*.log",
+		"/root/logs/*/gc.log",
+		"/root/logs/*/memory.log",
+		"/root/logs/*/application.log",
+		"/root/logs/*/app.log",
+		"/root/logs/*/DubboStack.*.log",
+		"/root/logs/*/providence.log",
 	}
 
-	pathString += "}"
-	return pathString
+	var pathString = "{" + inspect.LogPath + ","
+	if graphDiff, err := dockerutil.GetDockerDataPath(inspect); err == nil {
+		for _, logDir := range logThatNeedGather {
+			pathString += path.Join(graphDiff, logDir) + ","
+		}
+	}
+
+	return pathString + "}"
 }
