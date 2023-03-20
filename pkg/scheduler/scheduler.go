@@ -32,7 +32,6 @@ import (
 	"github.com/grafana/loki/pkg/scheduler/queue"
 	"github.com/grafana/loki/pkg/scheduler/schedulerpb"
 	"github.com/grafana/loki/pkg/util"
-	lokiutil "github.com/grafana/loki/pkg/util"
 	lokigrpc "github.com/grafana/loki/pkg/util/httpgrpc"
 	lokihttpreq "github.com/grafana/loki/pkg/util/httpreq"
 	util_log "github.com/grafana/loki/pkg/util/log"
@@ -123,15 +122,15 @@ type Config struct {
 	QuerierForgetDelay      time.Duration     `yaml:"querier_forget_delay"`
 	GRPCClientConfig        grpcclient.Config `yaml:"grpc_client_config" doc:"description=This configures the gRPC client used to report errors back to the query-frontend."`
 	// Schedulers ring
-	UseSchedulerRing bool                `yaml:"use_scheduler_ring"`
-	SchedulerRing    lokiutil.RingConfig `yaml:"scheduler_ring,omitempty"`
+	UseSchedulerRing bool            `yaml:"use_scheduler_ring"`
+	SchedulerRing    util.RingConfig `yaml:"scheduler_ring,omitempty" doc:"description=The hash ring configuration. This option is required only if use_scheduler_ring is true."`
 }
 
 func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
-	f.IntVar(&cfg.MaxOutstandingPerTenant, "query-scheduler.max-outstanding-requests-per-tenant", 100, "Maximum number of outstanding requests per tenant per query scheduler. In-flight requests above this limit will fail with HTTP response status code 429.")
+	f.IntVar(&cfg.MaxOutstandingPerTenant, "query-scheduler.max-outstanding-requests-per-tenant", 100, "Maximum number of outstanding requests per tenant per query-scheduler. In-flight requests above this limit will fail with HTTP response status code 429.")
 	f.DurationVar(&cfg.QuerierForgetDelay, "query-scheduler.querier-forget-delay", 0, "If a querier disconnects without sending notification about graceful shutdown, the query-scheduler will keep the querier in the tenant's shard until the forget delay has passed. This feature is useful to reduce the blast radius when shuffle-sharding is enabled.")
 	cfg.GRPCClientConfig.RegisterFlagsWithPrefix("query-scheduler.grpc-client-config", f)
-	f.BoolVar(&cfg.UseSchedulerRing, "query-scheduler.use-scheduler-ring", false, "Set to true to have the query scheduler create a ring and the frontend and frontend_worker use this ring to get the addresses of the query schedulers. If frontend_address and scheduler_address are not present in the config this value will be toggle by Loki to true")
+	f.BoolVar(&cfg.UseSchedulerRing, "query-scheduler.use-scheduler-ring", false, "Set to true to have the query schedulers create and place themselves in a ring. If no frontend_address or scheduler_address are present anywhere else in the configuration, Loki will toggle this value to true.")
 	cfg.SchedulerRing.RegisterFlagsWithPrefix("query-scheduler.", "collectors/", f)
 }
 
@@ -297,10 +296,10 @@ func (s *Scheduler) FrontendLoop(frontend schedulerpb.SchedulerForFrontend_Front
 		switch msg.GetType() {
 		case schedulerpb.ENQUEUE:
 			err = s.enqueueRequest(frontendCtx, frontendAddress, msg)
-			switch {
-			case err == nil:
+			switch err {
+			case nil:
 				resp = &schedulerpb.SchedulerToFrontend{Status: schedulerpb.OK}
-			case err == queue.ErrTooManyRequests:
+			case queue.ErrTooManyRequests:
 				resp = &schedulerpb.SchedulerToFrontend{Status: schedulerpb.TOO_MANY_REQUESTS_PER_TENANT}
 			default:
 				resp = &schedulerpb.SchedulerToFrontend{Status: schedulerpb.ERROR, Error: err.Error()}
@@ -411,7 +410,7 @@ func (s *Scheduler) enqueueRequest(frontendContext context.Context, frontendAddr
 	maxQueriers := validation.SmallestPositiveNonZeroIntPerTenant(tenantIDs, s.limits.MaxQueriersPerUser)
 
 	s.activeUsers.UpdateUserTimestamp(userID, now)
-	return s.requestQueue.EnqueueRequest(userID, req, maxQueriers, func() {
+	return s.requestQueue.Enqueue(userID, req, maxQueriers, func() {
 		shouldCancel = false
 
 		s.pendingRequestsMu.Lock()
@@ -446,15 +445,15 @@ func (s *Scheduler) QuerierLoop(querier schedulerpb.SchedulerForQuerier_QuerierL
 	s.requestQueue.RegisterQuerierConnection(querierID)
 	defer s.requestQueue.UnregisterQuerierConnection(querierID)
 
-	lastUserIndex := queue.FirstUser()
+	lastIndex := queue.StartIndex
 
 	// In stopping state scheduler is not accepting new queries, but still dispatching queries in the queues.
 	for s.isRunningOrStopping() {
-		req, idx, err := s.requestQueue.GetNextRequestForQuerier(querier.Context(), lastUserIndex, querierID)
+		req, idx, err := s.requestQueue.Dequeue(querier.Context(), lastIndex, querierID)
 		if err != nil {
 			return err
 		}
-		lastUserIndex = idx
+		lastIndex = idx
 
 		r := req.(*schedulerRequest)
 
@@ -484,7 +483,7 @@ func (s *Scheduler) QuerierLoop(querier schedulerpb.SchedulerForQuerier_QuerierL
 			// Remove from pending requests.
 			s.cancelRequestAndRemoveFromPending(r.frontendAddress, r.queryID)
 
-			lastUserIndex = lastUserIndex.ReuseLastUser()
+			lastIndex = lastIndex.ReuseLastIndex()
 			continue
 		}
 
@@ -659,7 +658,7 @@ func (s *Scheduler) running(ctx context.Context) error {
 			if !s.cfg.UseSchedulerRing {
 				continue
 			}
-			isInSet, err := lokiutil.IsInReplicationSet(s.ring, lokiutil.RingKeyOfLeader, s.ringLifecycler.GetInstanceAddr())
+			isInSet, err := util.IsInReplicationSet(s.ring, util.RingKeyOfLeader, s.ringLifecycler.GetInstanceAddr())
 			if err != nil {
 				level.Error(s.log).Log("msg", "failed to query the ring to see if scheduler instance is in ReplicatonSet, will try again", "err", err)
 				continue
@@ -762,5 +761,9 @@ func (s *Scheduler) OnRingInstanceHeartbeat(_ *ring.BasicLifecycler, _ *ring.Des
 }
 
 func (s *Scheduler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	s.ring.ServeHTTP(w, req)
+	if s.cfg.UseSchedulerRing {
+		s.ring.ServeHTTP(w, req)
+	} else {
+		_, _ = w.Write([]byte("QueryScheduler running with '-query-scheduler.use-scheduler-ring' set to false."))
+	}
 }

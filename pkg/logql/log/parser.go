@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"strings"
 	"unicode/utf8"
+
+	"github.com/buger/jsonparser"
 
 	"github.com/grafana/loki/pkg/logql/log/jsonexpr"
 	"github.com/grafana/loki/pkg/logql/log/logfmt"
@@ -23,6 +23,9 @@ const (
 	duplicateSuffix = "_extracted"
 	trueString      = "true"
 	falseString     = "false"
+	// How much stack space to allocate for unescaping JSON strings; if a string longer
+	// than this needs to be escaped, it will result in a heap allocation
+	unescapeStackBufSize = 64
 )
 
 var (
@@ -30,13 +33,15 @@ var (
 	_ Stage = &RegexpParser{}
 	_ Stage = &LogfmtParser{}
 
+	trueBytes = []byte("true")
+
 	errUnexpectedJSONObject = fmt.Errorf("expecting json object(%d), but it is not", jsoniter.ObjectValue)
 	errMissingCapture       = errors.New("at least one named capture must be supplied")
 )
 
 type JSONParser struct {
-	buf []byte // buffer used to build json keys
-	lbs *LabelsBuilder
+	prefixBuffer []byte // buffer used to build json keys
+	lbs          *LabelsBuilder
 
 	keys internedStringSet
 }
@@ -44,8 +49,8 @@ type JSONParser struct {
 // NewJSONParser creates a log stage that can parse a json log line and add properties as labels.
 func NewJSONParser() *JSONParser {
 	return &JSONParser{
-		buf:  make([]byte, 0, 1024),
-		keys: internedStringSet{},
+		prefixBuffer: make([]byte, 0, 1024),
+		keys:         internedStringSet{},
 	}
 }
 
@@ -53,138 +58,128 @@ func (j *JSONParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byte, 
 	if lbs.ParserLabelHints().NoLabels() {
 		return line, true
 	}
-	it := jsoniter.ConfigFastest.BorrowIterator(line)
-	defer jsoniter.ConfigFastest.ReturnIterator(it)
 
 	// reset the state.
-	j.buf = j.buf[:0]
+	j.prefixBuffer = j.prefixBuffer[:0]
 	j.lbs = lbs
 
-	if err := j.readObject(it); err != nil {
+	if err := jsonparser.ObjectEach(line, j.parseObject); err != nil {
 		lbs.SetErr(errJSON)
 		lbs.SetErrorDetails(err.Error())
+		if lbs.ParserLabelHints().PreserveError() {
+			lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+		}
 		return line, true
 	}
 	return line, true
 }
 
-func (j *JSONParser) readObject(it *jsoniter.Iterator) error {
-	// we only care about object and values.
-	if nextType := it.WhatIsNext(); nextType != jsoniter.ObjectValue {
-		return errUnexpectedJSONObject
+func (j *JSONParser) parseObject(key, value []byte, dataType jsonparser.ValueType, offset int) error {
+	switch dataType {
+	case jsonparser.String, jsonparser.Number, jsonparser.Boolean:
+		j.parseLabelValue(key, value, dataType)
+	case jsonparser.Object:
+		prefixLen := len(j.prefixBuffer)
+		var err error
+		if ok := j.nextKeyPrefix(key); ok {
+			err = jsonparser.ObjectEach(value, j.parseObject)
+		}
+		// rollback the prefix as we exit the current object.
+		j.prefixBuffer = j.prefixBuffer[:prefixLen]
+		return err
 	}
-	_ = it.ReadMapCB(j.parseMap(""))
-	if it.Error != nil && it.Error != io.EOF {
-		return it.Error
-	}
+
 	return nil
 }
 
-func (j *JSONParser) parseMap(prefix string) func(iter *jsoniter.Iterator, field string) bool {
-	return func(iter *jsoniter.Iterator, field string) bool {
-		switch iter.WhatIsNext() {
-		// are we looking at a value that needs to be added ?
-		case jsoniter.StringValue, jsoniter.NumberValue, jsoniter.BoolValue:
-			j.parseLabelValue(iter, prefix, field)
-		// Or another new object based on a prefix.
-		case jsoniter.ObjectValue:
-			if key, ok := j.nextKeyPrefix(prefix, field); ok {
-				return iter.ReadMapCB(j.parseMap(key))
-			}
-			// If this keys is not expected we skip the object
-			iter.Skip()
-		default:
-			iter.Skip()
-		}
-		return true
+// nextKeyPrefix load the next prefix in the buffer and tells if it should be processed based on hints.
+func (j *JSONParser) nextKeyPrefix(key []byte) bool {
+	// first add the spacer if needed.
+	if len(j.prefixBuffer) != 0 {
+		j.prefixBuffer = append(j.prefixBuffer, byte(jsonSpacer))
 	}
+	j.prefixBuffer = appendSanitized(j.prefixBuffer, key)
+	return j.lbs.ParserLabelHints().ShouldExtractPrefix(unsafeGetString(j.prefixBuffer))
 }
 
-func (j *JSONParser) nextKeyPrefix(prefix, field string) (string, bool) {
-	// first time we add return the field as prefix.
-	if len(prefix) == 0 {
-		field = sanitizeLabelKey(field, true)
-		if j.lbs.ParserLabelHints().ShouldExtractPrefix(field) {
-			return field, true
-		}
-		return "", false
-	}
-	// otherwise we build the prefix and check using the buffer
-	j.buf = j.buf[:0]
-	j.buf = append(j.buf, prefix...)
-	j.buf = append(j.buf, byte(jsonSpacer))
-	j.buf = append(j.buf, sanitizeLabelKey(field, false)...)
-	// if matches keep going
-	if j.lbs.ParserLabelHints().ShouldExtractPrefix(unsafeGetString(j.buf)) {
-		return string(j.buf), true
-	}
-	return "", false
-}
-
-func (j *JSONParser) parseLabelValue(iter *jsoniter.Iterator, prefix, field string) {
+func (j *JSONParser) parseLabelValue(key, value []byte, dataType jsonparser.ValueType) {
 	// the first time we use the field as label key.
-	if len(prefix) == 0 {
-		key, ok := j.keys.Get(unsafeGetBytes(field), func() (string, bool) {
-			field = sanitizeLabelKey(field, true)
-			if !j.lbs.ParserLabelHints().ShouldExtract(field) {
-				return "", false
-			}
+	if len(j.prefixBuffer) == 0 {
+		key, ok := j.keys.Get(key, func() (string, bool) {
+			field := sanitizeLabelKey(string(key), true)
 			if j.lbs.BaseHas(field) {
 				field = field + duplicateSuffix
+			}
+			if !j.lbs.ParserLabelHints().ShouldExtract(field) {
+				return "", false
 			}
 			return field, true
 		})
 		if !ok {
-			iter.Skip()
 			return
 		}
-		j.lbs.Set(key, readValue(iter))
+		j.lbs.Set(key, readValue(value, dataType))
 		return
 
 	}
 	// otherwise we build the label key using the buffer
-	j.buf = j.buf[:0]
-	j.buf = append(j.buf, prefix...)
-	j.buf = append(j.buf, byte(jsonSpacer))
-	j.buf = append(j.buf, sanitizeLabelKey(field, false)...)
-	key, ok := j.keys.Get(j.buf, func() (string, bool) {
-		if j.lbs.BaseHas(string(j.buf)) {
-			j.buf = append(j.buf, duplicateSuffix...)
+
+	// snapshot the current prefix position
+	prefixLen := len(j.prefixBuffer)
+	j.prefixBuffer = append(j.prefixBuffer, byte(jsonSpacer))
+	j.prefixBuffer = appendSanitized(j.prefixBuffer, key)
+	keyString, ok := j.keys.Get(j.prefixBuffer, func() (string, bool) {
+		if j.lbs.BaseHas(string(j.prefixBuffer)) {
+			j.prefixBuffer = append(j.prefixBuffer, duplicateSuffix...)
 		}
-		if !j.lbs.ParserLabelHints().ShouldExtract(string(j.buf)) {
+		if !j.lbs.ParserLabelHints().ShouldExtract(string(j.prefixBuffer)) {
 			return "", false
 		}
-		return string(j.buf), true
+		return string(j.prefixBuffer), true
 	})
+
+	// reset the prefix position
+	j.prefixBuffer = j.prefixBuffer[:prefixLen]
 	if !ok {
-		iter.Skip()
 		return
 	}
-	j.lbs.Set(key, readValue(iter))
+	j.lbs.Set(keyString, readValue(value, dataType))
 }
 
 func (j *JSONParser) RequiredLabelNames() []string { return []string{} }
 
-func readValue(iter *jsoniter.Iterator) string {
-	switch iter.WhatIsNext() {
-	case jsoniter.StringValue:
-		v := iter.ReadString()
-		// the rune error replacement is rejected by Prometheus, so we skip it.
-		if strings.ContainsRune(v, utf8.RuneError) {
-			return ""
-		}
-		return v
-	case jsoniter.NumberValue:
-		return iter.ReadNumber().String()
-	case jsoniter.BoolValue:
-		if iter.ReadBool() {
+func readValue(v []byte, dataType jsonparser.ValueType) string {
+	switch dataType {
+	case jsonparser.String:
+		return unescapeJSONString(v)
+	case jsonparser.Null:
+		return ""
+	case jsonparser.Number:
+		return string(v)
+	case jsonparser.Boolean:
+		if bytes.Equal(v, trueBytes) {
 			return trueString
 		}
 		return falseString
 	default:
-		iter.Skip()
 		return ""
 	}
+}
+
+func unescapeJSONString(b []byte) string {
+	var stackbuf [unescapeStackBufSize]byte // stack-allocated array for allocation-free unescaping of small strings
+	bU, err := jsonparser.Unescape(b, stackbuf[:])
+	if err != nil {
+		return ""
+	}
+	res := string(bU)
+	// rune error is rejected by Prometheus
+	for _, r := range res {
+		if r == utf8.RuneError {
+			return ""
+		}
+	}
+	return res
 }
 
 type RegexpParser struct {
@@ -298,6 +293,9 @@ func (l *LogfmtParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byte
 	if l.dec.Err() != nil {
 		lbs.SetErr(errLogfmt)
 		lbs.SetErrorDetails(l.dec.Err().Error())
+		if lbs.ParserLabelHints().PreserveError() {
+			lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+		}
 		return line, true
 	}
 	return line, true
@@ -348,15 +346,118 @@ func (l *PatternParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byt
 
 func (l *PatternParser) RequiredLabelNames() []string { return []string{} }
 
-type JSONExpressionParser struct {
+type LogfmtExpressionParser struct {
 	expressions map[string][]interface{}
-
-	keys internedStringSet
+	dec         *logfmt.Decoder
+	keys        internedStringSet
 }
 
-func NewJSONExpressionParser(expressions []JSONExpression) (*JSONExpressionParser, error) {
-	paths := make(map[string][]interface{})
+func NewLogfmtExpressionParser(expressions []LabelExtractionExpr) (*LogfmtExpressionParser, error) {
+	if len(expressions) == 0 {
+		return nil, fmt.Errorf("no logfmt expression provided")
+	}
+	paths := make(map[string][]interface{}, len(expressions))
 
+	for _, exp := range expressions {
+		path, err := logfmt.Parse(exp.Expression, false)
+		if err != nil {
+			return nil, fmt.Errorf("cannot parse expression [%s]: %w", exp.Expression, err)
+		}
+
+		if !model.LabelName(exp.Identifier).IsValid() {
+			return nil, fmt.Errorf("invalid extracted label name '%s'", exp.Identifier)
+		}
+		paths[exp.Identifier] = path
+	}
+	return &LogfmtExpressionParser{
+		expressions: paths,
+		dec:         logfmt.NewDecoder(nil),
+		keys:        internedStringSet{},
+	}, nil
+}
+
+func (l *LogfmtExpressionParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byte, bool) {
+	// If there are no expressions, extract common labels
+	// and add the suffix "_extracted"
+	if len(l.expressions) == 0 {
+		return line, false
+	}
+
+	if lbs.ParserLabelHints().NoLabels() {
+		return line, true
+	}
+
+	// Create a map of every renamed label and its original name
+	// in order to retrieve it later in the extraction phase
+	keys := make(map[string]string, len(l.expressions))
+	for id, paths := range l.expressions {
+		keys[id] = fmt.Sprintf("%v", paths...)
+		if !lbs.BaseHas(id) {
+			lbs.Set(id, "")
+		}
+	}
+
+	l.dec.Reset(line)
+	var current []byte
+	for l.dec.ScanKeyval() {
+		current = l.dec.Key()
+		key, ok := l.keys.Get(current, func() (string, bool) {
+			sanitized := sanitizeLabelKey(string(current), true)
+			if len(sanitized) == 0 {
+				return "", false
+			}
+
+			if !lbs.ParserLabelHints().ShouldExtract(sanitized) {
+				return "", false
+			}
+			return sanitized, true
+		})
+		if !ok {
+			continue
+		}
+		val := l.dec.Value()
+
+		for id, orig := range keys {
+			if key == orig {
+				key = id
+				break
+			}
+		}
+
+		if bytes.ContainsRune(val, utf8.RuneError) {
+			val = nil
+		}
+
+		if _, ok := l.expressions[key]; ok {
+			if lbs.BaseHas(key) {
+				key = key + duplicateSuffix
+			}
+			lbs.Set(key, string(val))
+		}
+	}
+	if l.dec.Err() != nil {
+		lbs.SetErr(errLogfmt)
+		lbs.SetErrorDetails(l.dec.Err().Error())
+		if lbs.ParserLabelHints().PreserveError() {
+			lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+		}
+		return line, true
+	}
+
+	return line, true
+}
+
+func (l *LogfmtExpressionParser) RequiredLabelNames() []string { return []string{} }
+
+type JSONExpressionParser struct {
+	ids   []string
+	paths [][]string
+	keys  internedStringSet
+}
+
+func NewJSONExpressionParser(expressions []LabelExtractionExpr) (*JSONExpressionParser, error) {
+	var ids []string
+	var paths [][]string
 	for _, exp := range expressions {
 		path, err := jsonexpr.Parse(exp.Expression, false)
 		if err != nil {
@@ -367,13 +468,28 @@ func NewJSONExpressionParser(expressions []JSONExpression) (*JSONExpressionParse
 			return nil, fmt.Errorf("invalid extracted label name '%s'", exp.Identifier)
 		}
 
-		paths[exp.Identifier] = path
+		ids = append(ids, exp.Identifier)
+		paths = append(paths, pathsToString(path))
 	}
 
 	return &JSONExpressionParser{
-		expressions: paths,
-		keys:        internedStringSet{},
+		ids:   ids,
+		paths: paths,
+		keys:  internedStringSet{},
 	}, nil
+}
+
+func pathsToString(paths []interface{}) []string {
+	stingPaths := make([]string, 0, len(paths))
+	for _, p := range paths {
+		switch v := p.(type) {
+		case int:
+			stingPaths = append(stingPaths, fmt.Sprintf("[%d]", v))
+		case string:
+			stingPaths = append(stingPaths, v)
+		}
+	}
+	return stingPaths
 }
 
 func (j *JSONExpressionParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byte, bool) {
@@ -381,13 +497,28 @@ func (j *JSONExpressionParser) Process(_ int64, line []byte, lbs *LabelsBuilder)
 		return line, true
 	}
 
-	if !jsoniter.ConfigFastest.Valid(line) {
+	// Check that the line starts correctly
+	// the parser will pass an error if other
+	// parts of the line are malformed
+	if !isValidJSONStart(line) {
 		lbs.SetErr(errJSON)
+		if lbs.ParserLabelHints().PreserveError() {
+			lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+		}
 		return line, true
 	}
 
-	for identifier, paths := range j.expressions {
-		result := jsoniter.ConfigFastest.Get(line, paths...).ToString()
+	var matches int
+	jsonparser.EachKey(line, func(idx int, data []byte, typ jsonparser.ValueType, err error) {
+		if err != nil {
+			lbs.SetErr(errJSON)
+			if lbs.ParserLabelHints().PreserveError() {
+				lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+			}
+			return
+		}
+
+		identifier := j.ids[idx]
 		key, _ := j.keys.Get(unsafeGetBytes(identifier), func() (string, bool) {
 			if lbs.BaseHas(identifier) {
 				identifier = identifier + duplicateSuffix
@@ -395,10 +526,35 @@ func (j *JSONExpressionParser) Process(_ int64, line []byte, lbs *LabelsBuilder)
 			return identifier, true
 		})
 
-		lbs.Set(key, result)
+		switch typ {
+		case jsonparser.Null:
+			lbs.Set(key, "")
+		default:
+			lbs.Set(key, unsafeGetString(data))
+		}
+
+		matches++
+	}, j.paths...)
+
+	// Ensure there's a label for every value
+	if matches < len(j.ids) {
+		for _, id := range j.ids {
+			if _, ok := lbs.Get(id); !ok {
+				lbs.Set(id, "")
+			}
+		}
 	}
 
 	return line, true
+}
+
+func isValidJSONStart(data []byte) bool {
+	switch data[0] {
+	case '"', '{', '[':
+		return true
+	default:
+		return false
+	}
 }
 
 func (j *JSONExpressionParser) RequiredLabelNames() []string { return []string{} }
@@ -426,38 +582,45 @@ func (u *UnpackParser) Process(_ int64, line []byte, lbs *LabelsBuilder) ([]byte
 	if lbs.ParserLabelHints().NoLabels() {
 		return line, true
 	}
-	u.lbsBuffer = u.lbsBuffer[:0]
-	it := jsoniter.ConfigFastest.BorrowIterator(line)
-	defer jsoniter.ConfigFastest.ReturnIterator(it)
 
-	entry, err := u.unpack(it, line, lbs)
+	u.lbsBuffer = u.lbsBuffer[:0]
+	entry, err := u.unpack(line, lbs)
 	if err != nil {
 		lbs.SetErr(errJSON)
 		lbs.SetErrorDetails(err.Error())
+		if lbs.ParserLabelHints().PreserveError() {
+			lbs.Set(logqlmodel.PreserveErrorLabel, "true")
+		}
 		return line, true
 	}
 	return entry, true
 }
 
-func (u *UnpackParser) unpack(it *jsoniter.Iterator, entry []byte, lbs *LabelsBuilder) ([]byte, error) {
+func (u *UnpackParser) unpack(entry []byte, lbs *LabelsBuilder) ([]byte, error) {
 	// we only care about object and values.
-	if nextType := it.WhatIsNext(); nextType != jsoniter.ObjectValue {
+	if entry[0] != '{' {
 		return nil, errUnexpectedJSONObject
 	}
+
 	var isPacked bool
-	_ = it.ReadMapCB(func(iter *jsoniter.Iterator, field string) bool {
-		switch iter.WhatIsNext() {
-		case jsoniter.StringValue:
-			// we only unpack map[string]string. Anything else is skipped.
-			if field == logqlmodel.PackedEntryKey {
-				// todo(ctovena): we should just reslice the original line since the property is contiguous
-				// but jsoniter doesn't allow us to do this right now.
-				// https://github.com/buger/jsonparser might do a better job at this.
-				entry = []byte(iter.ReadString())
+	err := jsonparser.ObjectEach(entry, func(key, value []byte, typ jsonparser.ValueType, _ int) error {
+		switch typ {
+		case jsonparser.String:
+			if unsafeGetString(key) == logqlmodel.PackedEntryKey {
+				// Inlined bytes escape to save allocs
+				var stackbuf [unescapeStackBufSize]byte // stack-allocated array for allocation-free unescaping of small strings
+				bU, err := jsonparser.Unescape(value, stackbuf[:])
+				if err != nil {
+					return err
+				}
+
+				entry = bU
 				isPacked = true
-				return true
+				return nil
 			}
-			key, ok := u.keys.Get(unsafeGetBytes(field), func() (string, bool) {
+
+			key, ok := u.keys.Get(key, func() (string, bool) {
+				field := unsafeGetString(key)
 				if !lbs.ParserLabelHints().ShouldExtract(field) {
 					return "", false
 				}
@@ -467,20 +630,22 @@ func (u *UnpackParser) unpack(it *jsoniter.Iterator, entry []byte, lbs *LabelsBu
 				return field, true
 			})
 			if !ok {
-				iter.Skip()
-				return true
+				return nil
 			}
 
 			// append to the buffer of labels
-			u.lbsBuffer = append(u.lbsBuffer, key, iter.ReadString())
+			u.lbsBuffer = append(u.lbsBuffer, key, unescapeJSONString(value))
 		default:
-			iter.Skip()
+			return nil
 		}
-		return true
+
+		return nil
 	})
-	if it.Error != nil && it.Error != io.EOF {
-		return nil, it.Error
+
+	if err != nil {
+		return nil, err
 	}
+
 	// flush the buffer if we found a packed entry.
 	if isPacked {
 		for i := 0; i < len(u.lbsBuffer); i = i + 2 {

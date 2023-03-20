@@ -113,7 +113,7 @@ func New(
 	clientCfg client.Config,
 	configs *runtime.TenantConfigs,
 	ingestersRing ring.ReadRing,
-	overrides *validation.Overrides,
+	overrides Limits,
 	registerer prometheus.Registerer,
 ) (*Distributor, error) {
 	factory := cfg.factory
@@ -525,7 +525,7 @@ func (d *Distributor) truncateLines(vContext validationContext, stream *logproto
 			stream.Entries[i].Line = e.Line[:maxSize]
 
 			truncatedSamples++
-			truncatedBytes = len(e.Line) - maxSize
+			truncatedBytes += len(e.Line) - maxSize
 		}
 	}
 
