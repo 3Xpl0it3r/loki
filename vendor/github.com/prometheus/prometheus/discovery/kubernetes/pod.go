@@ -161,7 +161,7 @@ const (
 	podUID                        = metaLabelPrefix + "pod_uid"
 	podControllerKind             = metaLabelPrefix + "pod_controller_kind"
 	podControllerName             = metaLabelPrefix + "pod_controller_name"
-	podContainerIdLable          = metaLabelPrefix + "pod_container_id"
+	podContainerIdLable           = metaLabelPrefix + "pod_container_id"
 )
 
 // GetControllerOf returns a pointer to a copy of the controllerRef if controllee has a controller
@@ -186,7 +186,7 @@ func podLabels(pod *apiv1.Pod) model.LabelSet {
 		podUID:           lv(string(pod.ObjectMeta.UID)),
 	}
 	dockerId := podContainerId(pod)
-	if dockerId != ""{
+	if dockerId != "" {
 		ls[podContainerIdLable] = lv(dockerId)
 	}
 
@@ -279,23 +279,22 @@ func podReady(pod *apiv1.Pod) model.LabelValue {
 	return lv(strings.ToLower(string(apiv1.ConditionUnknown)))
 }
 
-
-func podContainerId(pod *apiv1.Pod)string{
+func podContainerId(pod *apiv1.Pod) string {
 	// get one of containers is ok
-	if pod == nil{
+	if pod == nil {
 		return ""
 	}
 	// get container name , select the first one
 	var containerName string
-	for _, container := range pod.Spec.Containers{
-		if container.Name != ""{
+	for _, container := range pod.Spec.Containers {
+		if container.Name != "" {
 			containerName = container.Name
 			break
 		}
 	}
 	// get coontainer id
-	for _, containerSts := range pod.Status.ContainerStatuses{
-		if containerSts.Name == containerName{
+	for _, containerSts := range pod.Status.ContainerStatuses {
+		if containerSts.Name == containerName {
 			containerIdSlice := strings.Split(containerSts.ContainerID, "docker://")
 			return containerIdSlice[len(containerIdSlice)-1]
 		}

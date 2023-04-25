@@ -74,7 +74,7 @@ func (d *DockerClient) ConsoleLogPath(containerId string) (string, error) {
 	return inspect.LogPath, nil
 }
 
-func (d *DockerClient) DockerInspect(containerId string) (*types.ContainerJSON, error) {
+func (d *DockerClient) Inspect(containerId string) (*types.ContainerJSON, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	inspect, err := d.client.ContainerInspect(ctx, containerId)
@@ -85,20 +85,23 @@ func (d *DockerClient) DockerInspect(containerId string) (*types.ContainerJSON, 
 }
 
 // same as MountsVolumes
-func GetDockerVolumePath(inspect *types.ContainerJSON) (string, error) {
+func MountsForLog(inspect *types.ContainerJSON) (string, error) {
 	if inspect == nil {
 		return "", errors.New("inspect information is nil")
 	}
 	for _, mountPoint := range inspect.Mounts {
-		if mountPoint.Type == mount.TypeVolume {
-			return mountPoint.Source, nil
+		if mountPoint.Type != mount.TypeBind {
+            continue
 		}
+        if mountPoint.Source == "/data/logs" && mountPoint.Destination == "/root/logs" {
+            return mountPoint.Source, nil
+        }
 	}
 	return "", errors.New("Not Found Mount Volume")
 }
 
 // same as GraphDriverUpperDir
-func GetDockerDataPath(inspect *types.ContainerJSON) (string, error) {
+func GraphData(inspect *types.ContainerJSON) (string, error) {
 	if inspect == nil {
 		return "", errors.New("inspect information is nil")
 	}
@@ -110,38 +113,7 @@ func GetDockerDataPath(inspect *types.ContainerJSON) (string, error) {
 	return "", errors.New("not found diff volume in docker")
 }
 
-// MountsVolumes return the Mounts that returned by docker inspect information
-func (d *DockerClient) MountsVolumes(containerId string) (string, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	inspect, err := d.client.ContainerInspect(ctx, containerId)
-	if err != nil {
-		return "", err
-	}
-	for _, mountPoint := range inspect.Mounts {
-		if mountPoint.Type == mount.TypeVolume {
-			return mountPoint.Source, nil
-		}
-	}
-	return "", err
-}
 
-// GraphDriverUpperDir return UpperDir data that returned by inspect information
-func (d *DockerClient) GraphDriverUpperDir(containerId string) (string, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	inspect, err := d.client.ContainerInspect(ctx, containerId)
-	if err != nil {
-		return "", err
-	}
-	for key, value := range inspect.GraphDriver.Data {
-		if key == string(GraphUpperDirDir) {
-			return value, nil
-		}
-	}
-
-	return "", errors.New("not found diff volume in docker")
-}
 
 // Ping check dockerClient is reachedAble
 func (d *DockerClient) Ping() error {

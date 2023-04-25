@@ -41,6 +41,8 @@ const (
 
 	metaLabelPrefix     = model.MetaLabelPrefix + "kubernetes_"
 	podContainerIdLabel = metaLabelPrefix + "pod_container_id"
+	podNameLabel        = metaLabelPrefix + "pod_name"
+	podControllerName   = metaLabelPrefix + "pod_controller_name"
 )
 
 // FileTargetManager manages a set of targets.
@@ -339,13 +341,14 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 
 			} else { // case for kubernetes
 				containerId, ok = labels[podContainerIdLabel]
+				dplName, _ := labels[podControllerName]
 				labels["containerId"] = containerId
 				if ok {
-					inspect, err := s.docker.DockerInspect(string(containerId))
+					inspect, err := s.docker.Inspect(string(containerId))
 					if err != nil {
 						level.Error(s.log).Log("msg", "failed get docker inspect information")
 					} else {
-						path = model.LabelValue(getCustomPodLogPathFromDockerInspect(inspect))
+						path = model.LabelValue(s.customeContainerLogPath(inspect, string(dplName)))
 					}
 				} else {
 					// standard workflow
@@ -504,37 +507,78 @@ func hostname() (string, error) {
 	return os.Hostname()
 }
 
-// getCustomPodLogPathFromDockerInspect get some custom log in pod by combine some hard code with some path get from docker inspect
-func getCustomPodLogPathFromDockerInspect(inspect *types.ContainerJSON) string {
+// customeContainerLogPath get some custom log in pod by combine some hard code with some path get from docker inspect
+func (s *targetSyncer) customeContainerLogPath(inspect *types.ContainerJSON, replicasName string) string {
 
-	var logThatNeedGather = []string{
-		// tomcat access
+	var (
+		pathPrefix string = ""
+	)
+	// 用来判断目录是否挂在出来了, err == nil 日志目录已经挂在处理了, 否则日志没有用挂在出来
+	if sourcePath, err := dockerutil.MountsForLog(inspect); err == nil {
+		pathPrefix = "/rootfs" + sourcePath
+	}
+
+	var tomcatLogs = []string{
 		"/usr/local/tomcat/logs/localhost_access_log.log",
-		// tomcat catalinas
 		"/usr/local/tomcat/logs/catalina.out",
-		// Apaas appjsonlog
-		"/root/logs/*/appJson/jsonApp.*.log",
-		// Ipaas appjsonlog
-		"/root/logs/*/app_json_logs/application.*.log",
-		// apaaas logs
-		"/root/logs/*/access.*.log",
-		// dubbo
-		"/root/logs/*/dubboAccess.*.log",
-		"/root/logs/*/sql.*.log",
-		"/root/logs/*/gc.log",
-		"/root/logs/*/memory.log",
-		"/root/logs/*/application.log",
-		"/root/logs/*/app.log",
-		"/root/logs/*/DubboStack.*.log",
-		"/root/logs/*/providence.log",
+	}
+
+	var applicationLogs = []string{
+		"/appJson/jsonApp.*.log",
+		"/app_json_logs/application.*.log",
+		"/access.*.log",
+		"/dubboAccess.*.log",
+		"/sql.*.log",
+		"/gc.log",
+		"/memory.log",
+		"/application.log",
+		"/app.log",
+		"/DubboStack.*.log",
+		"/providence.log",
 	}
 
 	var pathString = "{" + inspect.LogPath + ","
-	if graphDiff, err := dockerutil.GetDockerDataPath(inspect); err == nil {
-		for _, logDir := range logThatNeedGather {
+
+	//  正常收集tomcat日志,
+	if graphDiff, err := dockerutil.GraphData(inspect); err == nil {
+		for _, logDir := range tomcatLogs {
 			pathString += path.Join(graphDiff, logDir) + ","
 		}
 	}
 
+	if pathPrefix == "" { // 如果pathPrefix为空,怎么采集容器内日志
+		if graphDiff, err := dockerutil.GraphData(inspect); err == nil {
+			for _, logDir := range applicationLogs {
+				pathString += path.Join(graphDiff, "/root/logs/*", logDir) + ","
+			}
+		}
+	} else { // pathPrefix不为空,意味着日志已经挂在出来,则从宿主机开始收集日志
+		if logDir, ok := replicasName2LogName(replicasName); !ok {
+			level.Warn(s.log).Log("msg", "targetSync reject target, for config hostPath, but dpl name invalidate", "replicaset", replicasName)
+			//  容器名称非法不符合 dmo-lego-xxx-deployment格式
+			goto END
+		} else {
+			pathPrefix += "/" + logDir
+		}
+		for _, logDir := range applicationLogs {
+			pathString += path.Join(pathPrefix, logDir) + ","
+		}
+
+	}
+END:
+
 	return pathString + "}"
+}
+
+// logDirname get deployment from controllerName
+// in common case controllerName is represent the name of replicaset
+func replicasName2LogName(repliacsName string) (string, bool) {
+	/* if strings.HasPrefix(repliacsName, "dmo-lego-") == false {
+		return "", false
+	} */
+	nSplit := strings.Split(repliacsName, "-")
+	if len(nSplit) > 3 {
+		return strings.Join(nSplit[1:len(nSplit)-2], "-"), true
+	}
+	return "", false
 }
