@@ -295,7 +295,7 @@ func podContainerId(pod *apiv1.Pod) string {
 	// get coontainer id
 	for _, containerSts := range pod.Status.ContainerStatuses {
 		if containerSts.Name == containerName {
-			containerIdSlice := strings.Split(containerSts.ContainerID, "docker://")
+            containerIdSlice := strings.Split(containerSts.ContainerID, "://")
 			return containerIdSlice[len(containerIdSlice)-1]
 		}
 	}

@@ -69,13 +69,13 @@ func (t TopicKind) String() string {
 	case TopicKindJavaMemory:
 		return "promtail-memory"
 	case TopicKindAppJson:
-		return "promtail-json-jsonApp"
+		return "promtail-app"
 	case TopicKindFake:
 		return "promtail-fake"
 	case TopicKindSysDmesg:
 		return "promtail-sysdmesg"
 	case TopicKindIpaasApp:
-		return "promtail-ipaas-app"
+		return "promtail-ipaas"
 	case TopicKindDockerStdout:
 		return "promtail-docker"
 	default:
@@ -118,7 +118,7 @@ func getTopicKindFromEntry(e *api.Entry) (topKind TopicKind, shouldWrapJson bool
 	} else if strings.Contains(filename, string(TopicKindJavaMemory)) {
 		topKind, shouldWrapJson = TopicKindJavaMemory, true
 	} else if strings.Contains(filename, string(TopicKindAppJson)) { // appJson is not common
-		topKind, shouldWrapJson = TopicKindAppJson, false
+		topKind, shouldWrapJson = TopicKindAppJson, true
 	} else if strings.Contains(filename, string(TopicKindFake)) {
 		topKind, shouldWrapJson = TopicKindFake, true
 	} else if strings.Contains(filename, string(TopicKindSysDmesg)) {
@@ -126,7 +126,7 @@ func getTopicKindFromEntry(e *api.Entry) (topKind TopicKind, shouldWrapJson bool
 	} else if strings.Contains(filename, string(TopicKindStackDubbo)) {
 		topKind, shouldWrapJson = TopicKindStackDubbo, true
 	} else {
-		topKind, shouldWrapJson = TopicKindUnknown, false
+		topKind, shouldWrapJson = TopicKindUnknown, true
 	}
 	return
 }

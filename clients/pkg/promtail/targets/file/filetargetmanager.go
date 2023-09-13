@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/docker/docker/api/types"
-
 	"github.com/bmatcuk/doublestar"
 	"gopkg.in/fsnotify.v1"
 
@@ -29,7 +27,7 @@ import (
 	"github.com/grafana/loki/clients/pkg/promtail/scrapeconfig"
 	"github.com/grafana/loki/clients/pkg/promtail/targets/target"
 
-	dockerutil "github.com/grafana/loki/clients/pkg/promtail/util"
+	cri "github.com/grafana/loki/clients/pkg/promtail/container"
 	"github.com/grafana/loki/pkg/util"
 )
 
@@ -67,7 +65,7 @@ func NewFileTargetManager(
 	client api.EntryHandler,
 	scrapeConfigs []scrapeconfig.Config,
 	targetConfig *Config,
-	docker *dockerutil.DockerClient,
+	criClient cri.Client,
 ) (*FileTargetManager, error) {
 	reg := metrics.reg
 	if reg == nil {
@@ -141,7 +139,7 @@ func NewFileTargetManager(
 			entryHandler:      pipeline.Wrap(client),
 			targetConfig:      targetConfig,
 			fileEventWatchers: map[string]chan fsnotify.Event{},
-			docker:            docker,
+			criClient:         criClient,
 		}
 		tm.syncers[cfg.JobName] = s
 		configs[cfg.JobName] = cfg.ServiceDiscoveryConfig.Configs()
@@ -273,7 +271,7 @@ type targetSyncer struct {
 	relabelConfig []*relabel.Config
 	targetConfig  *Config
 
-	docker *dockerutil.DockerClient
+	criClient cri.Client
 }
 
 // sync synchronize target based on received target groups received by service discovery
@@ -344,11 +342,11 @@ func (s *targetSyncer) sync(groups []*targetgroup.Group, targetEventHandler chan
 				dplName, _ := labels[podControllerName]
 				labels["containerId"] = containerId
 				if ok {
-					inspect, err := s.docker.Inspect(string(containerId))
+					externalPath, internalPath, err := s.criClient.LogStoreDir(string(containerId))
 					if err != nil {
 						level.Error(s.log).Log("msg", "failed get docker inspect information")
 					} else {
-						path = model.LabelValue(s.customeContainerLogPath(inspect, string(dplName)))
+						path = model.LabelValue(s.customeContainerLogPath(externalPath, internalPath, string(dplName)))
 					}
 				} else {
 					// standard workflow
@@ -508,20 +506,7 @@ func hostname() (string, error) {
 }
 
 // customeContainerLogPath get some custom log in pod by combine some hard code with some path get from docker inspect
-func (s *targetSyncer) customeContainerLogPath(inspect *types.ContainerJSON, replicasName string) string {
-
-	var (
-		pathPrefix string = ""
-	)
-	// 用来判断目录是否挂在出来了, err == nil 日志目录已经挂在处理了, 否则日志没有用挂在出来
-	if sourcePath, err := dockerutil.MountsForLog(inspect); err == nil {
-		pathPrefix = "/rootfs" + sourcePath
-	}
-
-	var tomcatLogs = []string{
-		"/usr/local/tomcat/logs/localhost_access_log.log",
-		"/usr/local/tomcat/logs/catalina.out",
-	}
+func (s *targetSyncer) customeContainerLogPath(externalPath, internalPath, replicasName string) string {
 
 	var applicationLogs = []string{
 		"/appJson/jsonApp.*.log",
@@ -537,35 +522,31 @@ func (s *targetSyncer) customeContainerLogPath(inspect *types.ContainerJSON, rep
 		"/providence.log",
 	}
 
-	var pathString = "{" + inspect.LogPath + ","
+	var (
+        pathString = "{"
+    )
 
-	//  正常收集tomcat日志,
-	if graphDiff, err := dockerutil.GraphData(inspect); err == nil {
-		for _, logDir := range tomcatLogs {
-			pathString += path.Join(graphDiff, logDir) + ","
-		}
-	}
-
-	if pathPrefix == "" { // 如果pathPrefix为空,怎么采集容器内日志
-		if graphDiff, err := dockerutil.GraphData(inspect); err == nil {
-			for _, logDir := range applicationLogs {
-				pathString += path.Join(graphDiff, "/root/logs/*", logDir) + ","
-			}
-		}
-	} else { // pathPrefix不为空,意味着日志已经挂在出来,则从宿主机开始收集日志
-		if logDir, ok := replicasName2LogName(replicasName); !ok {
+	if externalPath != "" {
+		logDir, ok := replicasName2LogName(replicasName)
+		if !ok {
 			level.Warn(s.log).Log("msg", "targetSync reject target, for config hostPath, but dpl name invalidate", "replicaset", replicasName)
 			//  容器名称非法不符合 dmo-lego-xxx-deployment格式
-			goto END
-		} else {
-			pathPrefix += "/" + logDir
-		}
-		for _, logDir := range applicationLogs {
-			pathString += path.Join(pathPrefix, logDir) + ","
+			return ""
 		}
 
+        prefix := "/rootfs/" + externalPath + "/" + logDir
+		for _, logDir := range applicationLogs {
+			pathString += path.Join(prefix, logDir) + ","
+		}
+
+		return pathString + "}"
 	}
-END:
+
+	if internalPath != "" {
+		for _, logDir := range applicationLogs {
+			pathString += path.Join(internalPath, "/root/logs/*", logDir) + ","
+		}
+	}
 
 	return pathString + "}"
 }

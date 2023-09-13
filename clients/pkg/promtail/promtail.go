@@ -1,10 +1,11 @@
 package promtail
 
 import (
-	"github.com/go-kit/kit/log/level"
-	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
-	"github.com/grafana/loki/clients/pkg/promtail/util"
 	"sync"
+
+	"github.com/go-kit/log/level"
+	"github.com/grafana/loki/clients/pkg/promtail/client/metrics"
+	cri "github.com/grafana/loki/clients/pkg/promtail/container"
 
 	"github.com/go-kit/log"
 	"github.com/prometheus/client_golang/prometheus"
@@ -45,7 +46,7 @@ type Promtail struct {
 	logger         log.Logger
 	reg            prometheus.Registerer
 
-	docker *util.DockerClient
+	criClient cri.Client
 
 	stopped bool
 	mtx     sync.Mutex
@@ -67,20 +68,25 @@ func New(cfg config.Config, metrics *metrics.Metrics, dryRun bool, opts ...Optio
 		o(promtail)
 	}
 
-	// create docker
-	docker := util.NewDockerClient()
-	if err := docker.Ping();err != nil{
+	// create criClient
+	criClient, err := cri.NewClient()
+	if err != nil {
 		level.Error(promtail.logger).Log("Failed Create Promtail", err)
 		return nil, err
 	}
-	promtail.docker = docker
+
+	if err = criClient.Ping(); err != nil {
+		level.Error(promtail.logger).Log("Failed Create Promtail", err)
+		return nil, err
+	}
+	promtail.criClient = criClient
 
 	cfg.Setup(promtail.logger)
 
 	if cfg.LimitsConfig.ReadlineRateEnabled {
 		stages.SetReadLineRateLimiter(cfg.LimitsConfig.ReadlineRate, cfg.LimitsConfig.ReadlineBurst, cfg.LimitsConfig.ReadlineRateDrop)
 	}
-	var err error
+
 	if dryRun {
 		promtail.client, err = client.NewLogger(metrics, cfg.Options.StreamLagLabels, promtail.logger, cfg.ClientConfigs)
 		if err != nil {
@@ -94,7 +100,7 @@ func New(cfg config.Config, metrics *metrics.Metrics, dryRun bool, opts ...Optio
 		}
 	}
 
-	tms, err := targets.NewTargetManagers(promtail, promtail.reg, promtail.logger, cfg.PositionsConfig, promtail.client, cfg.ScrapeConfig, &cfg.TargetConfig, docker)
+	tms, err := targets.NewTargetManagers(promtail, promtail.reg, promtail.logger, cfg.PositionsConfig, promtail.client, cfg.ScrapeConfig, &cfg.TargetConfig, criClient)
 	if err != nil {
 		return nil, err
 	}
@@ -140,6 +146,7 @@ func (p *Promtail) Shutdown() {
 	}
 	// todo work out the stop.
 	p.client.Stop()
+    p.criClient.Stop()
 }
 
 // ActiveTargets returns active targets per jobs from the target manager

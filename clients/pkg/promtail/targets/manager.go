@@ -2,7 +2,7 @@ package targets
 
 import (
 	"fmt"
-	"github.com/grafana/loki/clients/pkg/promtail/util"
+	cri "github.com/grafana/loki/clients/pkg/promtail/container"
 
 	"github.com/go-kit/log"
 	"github.com/go-kit/log/level"
@@ -62,7 +62,7 @@ func NewTargetManagers(
 	client api.EntryHandler,
 	scrapeConfigs []scrapeconfig.Config,
 	targetConfig *file.Config,
-	dockerClient *util.DockerClient,
+	criClient cri.Client,
 ) (*TargetManagers, error) {
 	if targetConfig.Stdin {
 		level.Debug(logger).Log("msg", "configured to read from stdin")
@@ -162,7 +162,7 @@ func NewTargetManagers(
 				client,
 				scrapeConfigs,
 				targetConfig,
-				dockerClient,
+				criClient,
 			)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to make file target manager")
