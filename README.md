@@ -144,6 +144,6 @@ If you would like to add your organization to the list, please open a PR to add 
 
 Grafana Loki is distributed under [AGPL-3.0-only](LICENSE). For Apache-2.0 exceptions, see [LICENSING.md](LICENSING.md).
 ## Donate
-&emsp;If it helps you, you can buy me a coffue if you want.
-![wechat](https://github.com/3Xpl0it3r/loki/blob/cp2/image/wechat.jpeg)
-![Alipay](https://github.com/3Xpl0it3r/loki/blob/cp2/image/alipay.jpeg)
+&emsp;If it helps you, you can buy me a coffue if you want.<br/>
+<img src="https://github.com/3Xpl0it3r/loki/blob/cp2/image/wechat.jpeg" width="200px" height="200px" />
+<img src="https://github.com/3Xpl0it3r/loki/blob/cp2/image/alipay.jpeg" width="200px" height="200px" />
