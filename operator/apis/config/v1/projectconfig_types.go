@@ -2,7 +2,7 @@ package v1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	cfg "sigs.k8s.io/controller-runtime/pkg/config/v1alpha1"
+	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
 )
 
 // BuiltInCertManagement is the configuration for the built-in facility to generate and rotate
@@ -28,16 +28,14 @@ type BuiltInCertManagement struct {
 
 // OpenShiftFeatureGates is the supported set of all operator features gates on OpenShift.
 type OpenShiftFeatureGates struct {
+	// Enabled defines the flag to enable that these feature gates are used against OpenShift Container Platform releases.
+	Enabled bool `json:"enabled,omitempty"`
+
 	// ServingCertsService enables OpenShift service-ca annotations on the lokistack-gateway service only
 	// to use the in-platform CA and generate a TLS cert/key pair per service for
 	// in-cluster data-in-transit encryption.
 	// More details: https://docs.openshift.com/container-platform/latest/security/certificate_types_descriptions/service-ca-certificates.html
 	ServingCertsService bool `json:"servingCertsService,omitempty"`
-
-	// GatewayRoute enables creating an OpenShift Route for the LokiStack
-	// gateway to expose the service to public internet access.
-	// More details: https://docs.openshift.com/container-platform/latest/networking/understanding-networking.html
-	GatewayRoute bool `json:"gatewayRoute,omitempty"`
 
 	// ExtendedRuleValidation enables extended validation of AlertingRule and RecordingRule
 	// to enforce tenancy in an OpenShift context.
@@ -50,6 +48,13 @@ type OpenShiftFeatureGates struct {
 	// ClusterProxy enables usage of the proxy variables set in the proxy resource.
 	// More details: https://docs.openshift.com/container-platform/4.11/networking/enable-cluster-wide-proxy.html#enable-cluster-wide-proxy
 	ClusterProxy bool `json:"clusterProxy,omitempty"`
+
+	// Dashboards enables the loki-mixin dashboards into the OpenShift Console
+	Dashboards bool `json:"dashboards,omitempty"`
+
+	// TokenCCOAuthEnv is true when OpenShift-functions are enabled and the operator has detected
+	// that it is running with some kind of "workload identity" (AWS STS, Azure WIF) enabled.
+	TokenCCOAuthEnv bool
 }
 
 // FeatureGates is the supported set of all operator feature gates.
@@ -100,9 +105,9 @@ type FeatureGates struct {
 	// More details: https://grafana.com/docs/loki/latest/release-notes/v2-5/#usage-reporting
 	GrafanaLabsUsageReport bool `json:"grafanaLabsUsageReport,omitempty"`
 
-	// RuntimeSeccompProfile enables the restricted seccomp profile on all
-	// Lokistack components.
-	RuntimeSeccompProfile bool `json:"runtimeSeccompProfile,omitempty"`
+	// RestrictedPodSecurityStandard enables compliance with the restrictive pod security standard.
+	// More details: https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted
+	RestrictedPodSecurityStandard bool `json:"restrictedPodSecurityStandard,omitempty"`
 
 	// LokiStackWebhook enables the LokiStack CR validation and conversion webhooks.
 	LokiStackWebhook bool `json:"lokiStackWebhook,omitempty"`
@@ -141,6 +146,67 @@ const (
 	TLSProfileModernType TLSProfileType = "Modern"
 )
 
+// ControllerManagerConfigurationSpec defines the desired state of GenericControllerManagerConfiguration.
+type ControllerManagerConfigurationSpec struct {
+	// LeaderElection is the LeaderElection config to be used when configuring
+	// the manager.Manager leader election
+	// +optional
+	LeaderElection *configv1alpha1.LeaderElectionConfiguration `json:"leaderElection,omitempty"`
+
+	// Metrics contains the controller metrics configuration
+	// +optional
+	Metrics ControllerMetrics `json:"metrics,omitempty"`
+
+	// Health contains the controller health configuration
+	// +optional
+	Health ControllerHealth `json:"health,omitempty"`
+
+	// Webhook contains the controllers webhook configuration
+	// +optional
+	Webhook ControllerWebhook `json:"webhook,omitempty"`
+}
+
+// ControllerMetrics defines the metrics configs.
+type ControllerMetrics struct {
+	// BindAddress is the TCP address that the controller should bind to
+	// for serving prometheus metrics.
+	// It can be set to "0" to disable the metrics serving.
+	// +optional
+	BindAddress string `json:"bindAddress,omitempty"`
+}
+
+// ControllerHealth defines the health configs.
+type ControllerHealth struct {
+	// HealthProbeBindAddress is the TCP address that the controller should bind to
+	// for serving health probes
+	// It can be set to "0" or "" to disable serving the health probe.
+	// +optional
+	HealthProbeBindAddress string `json:"healthProbeBindAddress,omitempty"`
+}
+
+// ControllerWebhook defines the webhook server for the controller.
+type ControllerWebhook struct {
+	// Port is the port that the webhook server serves at.
+	// It is used to set webhook.Server.Port.
+	// +optional
+	Port *int `json:"port,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// ControllerManagerConfiguration is the Schema for the GenericControllerManagerConfigurations API.
+type ControllerManagerConfiguration struct {
+	metav1.TypeMeta `json:",inline"`
+
+	// ControllerManagerConfiguration returns the contfigurations for controllers
+	ControllerManagerConfigurationSpec `json:",inline"`
+}
+
+// Complete returns the configuration for controller-runtime.
+func (c *ControllerManagerConfigurationSpec) Complete() (ControllerManagerConfigurationSpec, error) {
+	return *c, nil
+}
+
 //+kubebuilder:object:root=true
 
 // ProjectConfig is the Schema for the projectconfigs API
@@ -148,7 +214,7 @@ type ProjectConfig struct {
 	metav1.TypeMeta `json:",inline"`
 
 	// ControllerManagerConfigurationSpec returns the contfigurations for controllers
-	cfg.ControllerManagerConfigurationSpec `json:",inline"`
+	ControllerManagerConfigurationSpec `json:",inline"`
 
 	Gates FeatureGates `json:"featureGates,omitempty"`
 }

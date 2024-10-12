@@ -1,6 +1,6 @@
 /*
  * MinIO Go Library for Amazon S3 Compatible Cloud Storage
- * Copyright 2015-2017 MinIO, Inc.
+ * Copyright 2015-2023 MinIO, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,13 +19,18 @@ package minio
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
+
+	"github.com/minio/minio-go/v7/pkg/encrypt"
+	"github.com/minio/minio-go/v7/pkg/tags"
 )
 
 // expirationDateFormat date format for expiration key in json policy.
-const expirationDateFormat = "2006-01-02T15:04:05.999Z"
+const expirationDateFormat = "2006-01-02T15:04:05.000Z"
 
 // policyCondition explanation:
 // http://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-HTTPPOSTConstructPolicy.html
@@ -149,6 +154,27 @@ func (p *PostPolicy) SetCondition(matchType, condition, value string) error {
 	return errInvalidArgument("Invalid condition in policy")
 }
 
+// SetTagging - Sets tagging for the object for this policy based upload.
+func (p *PostPolicy) SetTagging(tagging string) error {
+	if strings.TrimSpace(tagging) == "" || tagging == "" {
+		return errInvalidArgument("No tagging specified.")
+	}
+	_, err := tags.ParseObjectXML(strings.NewReader(tagging))
+	if err != nil {
+		return errors.New("The XML you provided was not well-formed or did not validate against our published schema.") //nolint
+	}
+	policyCond := policyCondition{
+		matchType: "eq",
+		condition: "$tagging",
+		value:     tagging,
+	}
+	if err := p.addNewPolicy(policyCond); err != nil {
+		return err
+	}
+	p.formData["tagging"] = tagging
+	return nil
+}
+
 // SetContentType - Sets content-type of the object for this policy
 // based upload.
 func (p *PostPolicy) SetContentType(contentType string) error {
@@ -180,6 +206,23 @@ func (p *PostPolicy) SetContentTypeStartsWith(contentTypeStartsWith string) erro
 		return err
 	}
 	p.formData["Content-Type"] = contentTypeStartsWith
+	return nil
+}
+
+// SetContentDisposition - Sets content-disposition of the object for this policy
+func (p *PostPolicy) SetContentDisposition(contentDisposition string) error {
+	if strings.TrimSpace(contentDisposition) == "" || contentDisposition == "" {
+		return errInvalidArgument("No content disposition specified.")
+	}
+	policyCond := policyCondition{
+		matchType: "eq",
+		condition: "$Content-Disposition",
+		value:     contentDisposition,
+	}
+	if err := p.addNewPolicy(policyCond); err != nil {
+		return err
+	}
+	p.formData["Content-Disposition"] = contentDisposition
 	return nil
 }
 
@@ -238,7 +281,7 @@ func (p *PostPolicy) SetSuccessStatusAction(status string) error {
 
 // SetUserMetadata - Set user metadata as a key/value couple.
 // Can be retrieved through a HEAD request or an event.
-func (p *PostPolicy) SetUserMetadata(key string, value string) error {
+func (p *PostPolicy) SetUserMetadata(key, value string) error {
 	if strings.TrimSpace(key) == "" || key == "" {
 		return errInvalidArgument("Key is empty")
 	}
@@ -258,9 +301,48 @@ func (p *PostPolicy) SetUserMetadata(key string, value string) error {
 	return nil
 }
 
+// SetUserMetadataStartsWith - Set how an user metadata should starts with.
+// Can be retrieved through a HEAD request or an event.
+func (p *PostPolicy) SetUserMetadataStartsWith(key, value string) error {
+	if strings.TrimSpace(key) == "" || key == "" {
+		return errInvalidArgument("Key is empty")
+	}
+	headerName := fmt.Sprintf("x-amz-meta-%s", key)
+	policyCond := policyCondition{
+		matchType: "starts-with",
+		condition: fmt.Sprintf("$%s", headerName),
+		value:     value,
+	}
+	if err := p.addNewPolicy(policyCond); err != nil {
+		return err
+	}
+	p.formData[headerName] = value
+	return nil
+}
+
+// SetChecksum sets the checksum of the request.
+func (p *PostPolicy) SetChecksum(c Checksum) {
+	if c.IsSet() {
+		p.formData[amzChecksumAlgo] = c.Type.String()
+		p.formData[c.Type.Key()] = c.Encoded()
+	}
+}
+
+// SetEncryption - sets encryption headers for POST API
+func (p *PostPolicy) SetEncryption(sse encrypt.ServerSide) {
+	if sse == nil {
+		return
+	}
+	h := http.Header{}
+	sse.Marshal(h)
+	for k, v := range h {
+		p.formData[k] = v[0]
+	}
+}
+
 // SetUserData - Set user data as a key/value couple.
 // Can be retrieved through a HEAD request or an event.
-func (p *PostPolicy) SetUserData(key string, value string) error {
+func (p *PostPolicy) SetUserData(key, value string) error {
 	if key == "" {
 		return errInvalidArgument("Key is empty")
 	}

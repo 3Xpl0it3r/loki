@@ -13,10 +13,11 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/grafana/dskit/backoff"
 
-	"github.com/grafana/loki/pkg/logcli/client"
-	"github.com/grafana/loki/pkg/logcli/output"
-	"github.com/grafana/loki/pkg/loghttp"
-	"github.com/grafana/loki/pkg/util/unmarshal"
+	"github.com/grafana/loki/v3/pkg/logcli/client"
+	"github.com/grafana/loki/v3/pkg/logcli/output"
+	"github.com/grafana/loki/v3/pkg/logcli/util"
+	"github.com/grafana/loki/v3/pkg/loghttp"
+	"github.com/grafana/loki/v3/pkg/util/unmarshal"
 )
 
 // TailQuery connects to the Loki websocket endpoint and tails logs
@@ -126,4 +127,8 @@ func (q *Query) TailQuery(delayFor time.Duration, c client.Client, out output.Lo
 			}
 		}
 	}
+}
+
+func matchLabels(on bool, l loghttp.LabelSet, names []string) loghttp.LabelSet {
+	return util.MatchLabels(on, l, names)
 }

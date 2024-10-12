@@ -10,79 +10,18 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     let
-      golangci-lint-overlay = final: prev: {
-        golangci-lint = prev.callPackage
-          "${prev.path}/pkgs/development/tools/golangci-lint"
-          {
-            buildGoModule = args:
-              prev.buildGoModule (args // rec {
-                version = "1.45.2";
-
-                src = prev.fetchFromGitHub rec {
-                  owner = "golangci";
-                  repo = "golangci-lint";
-                  rev = "v${version}";
-                  sha256 =
-                    "sha256-Mr45nJbpyzxo0ZPwx22JW2WrjyjI9FPpl+gZ7NIc6WQ=";
-                };
-
-                vendorSha256 =
-                  "sha256-pcbKg1ePN8pObS9EzP3QYjtaty27L9sroKUs/qEPtJo=";
-
-                ldflags = [
-                  "-s"
-                  "-w"
-                  "-X main.version=${version}"
-                  "-X main.commit=v${version}"
-                  "-X main.date=19700101-00:00:00"
-                ];
-              });
-          };
-      };
-
-      helm-docs-overlay = final: prev: {
-        helm-docs = prev.callPackage
-          "${prev.path}/pkgs/applications/networking/cluster/helm-docs"
-          {
-            buildGoModule = args:
-              prev.buildGoModule (args // rec {
-                version = "1.11.0";
-
-                src = prev.fetchFromGitHub {
-                  owner = "norwoodj";
-                  repo = "helm-docs";
-                  rev = "v${version}";
-                  sha256 = "sha256-476ZhjRwHlNJFkHzY8qQ7WbAUUpFNSoxXLGX9esDA/E=";
-                };
-
-                vendorSha256 = "sha256-xXwunk9rmzZEtqmSo8biuXnAjPp7fqWdQ+Kt9+Di9N8=";
-
-                ldflags = [
-                  "-w"
-                  "-s"
-                  "-X main.version=v${version}"
-                ];
-              });
-          };
-      };
-
       nix = import ./nix { inherit self; };
     in
     {
       overlays = {
-        golangci-lint = golangci-lint-overlay;
-        helm-docs = helm-docs-overlay;
         default = nix.overlay;
       };
     } //
     flake-utils.lib.eachDefaultSystem (system:
       let
-
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            golangci-lint-overlay
-            helm-docs-overlay
             nix.overlay
           ];
           config = { allowUnfree = true; };
@@ -96,9 +35,12 @@
 
         packages = with pkgs; {
           inherit
+            logcli
             loki
+            loki-canary
             loki-helm-test
-            loki-helm-test-docker;
+            loki-helm-test-docker
+            promtail;
         };
 
         apps = {
@@ -112,44 +54,43 @@
               }/bin/lint.sh";
           };
 
-          loki = {
+          test = {
             type = "app";
-            program = with pkgs; "${loki.overrideAttrs(old: rec { doCheck = false; })}/bin/loki";
-          };
-          promtail = {
-            type = "app";
-            program = with pkgs; "${loki.overrideAttrs(old: rec { doCheck = false; })}/bin/promtail";
-          };
-          logcli = {
-            type = "app";
-            program = with pkgs; "${loki.overrideAttrs(old: rec { doCheck = false; })}/bin/logcli";
-          };
-          loki-canary = {
-            type = "app";
-            program = with pkgs; "${loki.overrideAttrs(old: rec { doCheck = false; })}/bin/loki-canary";
-          };
-          loki-helm-test = {
-            type = "app";
-            program = with pkgs; "${loki-helm-test}/bin/helm-test";
+            program = with pkgs; "${
+                (writeShellScriptBin "test.sh" ''
+                  ${loki.overrideAttrs(old: { 
+                  buildInputs =
+                    let
+                      inherit (old) buildInputs;
+                    in
+                    if pkgs.stdenv.hostPlatform.isLinux then
+                      buildInputs ++ (with pkgs; [ systemd ])
+                    else buildInputs;
+                  doCheck = true; 
+                  })}/bin/loki --version
+                '')
+              }/bin/test.sh";
           };
         };
 
         devShell = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
+            (import ./packages/chart-releaser.nix {
+              inherit (prev) pkgs lib buildGoModule fetchFromGitHub;
+            })
+
+            chart-testing
+            faillint
             gcc
             go
-            systemd
-            yamllint
-            nixpkgs-fmt
-            statix
-            nettools
-
             golangci-lint
             gotools
             helm-docs
-            faillint
-            chart-testing
-            chart-releaser
+            nettools
+            nixpkgs-fmt
+            statix
+            systemd
+            yamllint
           ];
         };
       });

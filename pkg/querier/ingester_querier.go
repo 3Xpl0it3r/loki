@@ -6,25 +6,33 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
+	"github.com/grafana/dskit/concurrency"
+	"github.com/grafana/dskit/user"
+	"golang.org/x/exp/slices"
+
+	"github.com/grafana/loki/v3/pkg/storage/stores/index/seriesvolume"
+
 	"github.com/gogo/status"
+	"github.com/grafana/dskit/httpgrpc"
 	"github.com/grafana/dskit/ring"
 	ring_client "github.com/grafana/dskit/ring/client"
 	"github.com/grafana/dskit/services"
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/labels"
-	"github.com/weaveworks/common/httpgrpc"
 	"google.golang.org/grpc/codes"
 
-	"github.com/grafana/loki/pkg/distributor/clientpool"
-	"github.com/grafana/loki/pkg/ingester/client"
-	"github.com/grafana/loki/pkg/iter"
-	"github.com/grafana/loki/pkg/logproto"
-	"github.com/grafana/loki/pkg/logql"
-	"github.com/grafana/loki/pkg/logql/syntax"
-	"github.com/grafana/loki/pkg/logqlmodel/stats"
-	index_stats "github.com/grafana/loki/pkg/storage/stores/index/stats"
-	util_log "github.com/grafana/loki/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/distributor/clientpool"
+	"github.com/grafana/loki/v3/pkg/ingester/client"
+	"github.com/grafana/loki/v3/pkg/iter"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/logql"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/logqlmodel/stats"
+	index_stats "github.com/grafana/loki/v3/pkg/storage/stores/index/stats"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
 )
 
 type responseFromIngesters struct {
@@ -34,26 +42,32 @@ type responseFromIngesters struct {
 
 // IngesterQuerier helps with querying the ingesters.
 type IngesterQuerier struct {
-	ring            ring.ReadRing
-	pool            *ring_client.Pool
-	extraQueryDelay time.Duration
+	querierConfig          Config
+	ring                   ring.ReadRing
+	partitionRing          *ring.PartitionInstanceRing
+	getShardCountForTenant func(string) int
+	pool                   *ring_client.Pool
+	logger                 log.Logger
 }
 
-func NewIngesterQuerier(clientCfg client.Config, ring ring.ReadRing, extraQueryDelay time.Duration) (*IngesterQuerier, error) {
+func NewIngesterQuerier(querierConfig Config, clientCfg client.Config, ring ring.ReadRing, partitionRing *ring.PartitionInstanceRing, getShardCountForTenant func(string) int, metricsNamespace string, logger log.Logger) (*IngesterQuerier, error) {
 	factory := func(addr string) (ring_client.PoolClient, error) {
 		return client.New(clientCfg, addr)
 	}
 
-	return newIngesterQuerier(clientCfg, ring, extraQueryDelay, factory)
+	return newIngesterQuerier(querierConfig, clientCfg, ring, partitionRing, getShardCountForTenant, ring_client.PoolAddrFunc(factory), metricsNamespace, logger)
 }
 
 // newIngesterQuerier creates a new IngesterQuerier and allows to pass a custom ingester client factory
 // used for testing purposes
-func newIngesterQuerier(clientCfg client.Config, ring ring.ReadRing, extraQueryDelay time.Duration, clientFactory ring_client.PoolFactory) (*IngesterQuerier, error) {
+func newIngesterQuerier(querierConfig Config, clientCfg client.Config, ring ring.ReadRing, partitionRing *ring.PartitionInstanceRing, getShardCountForTenant func(string) int, clientFactory ring_client.PoolFactory, metricsNamespace string, logger log.Logger) (*IngesterQuerier, error) {
 	iq := IngesterQuerier{
-		ring:            ring,
-		pool:            clientpool.NewPool(clientCfg.PoolConfig, ring, clientFactory, util_log.Logger),
-		extraQueryDelay: extraQueryDelay,
+		querierConfig:          querierConfig,
+		ring:                   ring,
+		partitionRing:          partitionRing,
+		getShardCountForTenant: getShardCountForTenant, // limits?
+		pool:                   clientpool.NewPool("ingester", clientCfg.PoolConfig, ring, clientFactory, util_log.Logger, metricsNamespace),
+		logger:                 logger,
 	}
 
 	err := services.StartAndAwaitRunning(context.Background(), iq.pool)
@@ -65,40 +79,74 @@ func newIngesterQuerier(clientCfg client.Config, ring ring.ReadRing, extraQueryD
 }
 
 // forAllIngesters runs f, in parallel, for all ingesters
-// TODO taken from Cortex, see if we can refactor out an usable interface.
 func (q *IngesterQuerier) forAllIngesters(ctx context.Context, f func(context.Context, logproto.QuerierClient) (interface{}, error)) ([]responseFromIngesters, error) {
+	if q.querierConfig.QueryPartitionIngesters {
+		tenantID, err := user.ExtractOrgID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		tenantShards := q.getShardCountForTenant(tenantID)
+		subring, err := q.partitionRing.ShuffleShardWithLookback(tenantID, tenantShards, q.querierConfig.QueryIngestersWithin, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		replicationSets, err := subring.GetReplicationSetsForOperation(ring.Read)
+		if err != nil {
+			return nil, err
+		}
+		return q.forGivenIngesterSets(ctx, replicationSets, f)
+	}
+
 	replicationSet, err := q.ring.GetReplicationSetForOperation(ring.Read)
 	if err != nil {
 		return nil, err
 	}
 
-	return q.forGivenIngesters(ctx, replicationSet, f)
+	return q.forGivenIngesters(ctx, replicationSet, defaultQuorumConfig(), f)
+}
+
+// forGivenIngesterSets runs f, in parallel, for given ingester sets
+func (q *IngesterQuerier) forGivenIngesterSets(ctx context.Context, replicationSet []ring.ReplicationSet, f func(context.Context, logproto.QuerierClient) (interface{}, error)) ([]responseFromIngesters, error) {
+	// Enable minimize requests so we initially query a single ingester per replication set, as each replication-set is one partition.
+	// Ingesters must supply zone information for this to have an effect.
+	config := ring.DoUntilQuorumConfig{
+		MinimizeRequests: true,
+	}
+	return concurrency.ForEachJobMergeResults[ring.ReplicationSet, responseFromIngesters](ctx, replicationSet, 0, func(ctx context.Context, set ring.ReplicationSet) ([]responseFromIngesters, error) {
+		return q.forGivenIngesters(ctx, set, config, f)
+	})
+}
+
+func defaultQuorumConfig() ring.DoUntilQuorumConfig {
+	return ring.DoUntilQuorumConfig{
+		// Nothing here
+	}
 }
 
 // forGivenIngesters runs f, in parallel, for given ingesters
-// TODO taken from Cortex, see if we can refactor out an usable interface.
-func (q *IngesterQuerier) forGivenIngesters(ctx context.Context, replicationSet ring.ReplicationSet, f func(context.Context, logproto.QuerierClient) (interface{}, error)) ([]responseFromIngesters, error) {
-	results, err := replicationSet.Do(ctx, q.extraQueryDelay, func(ctx context.Context, ingester *ring.InstanceDesc) (interface{}, error) {
+func (q *IngesterQuerier) forGivenIngesters(ctx context.Context, replicationSet ring.ReplicationSet, quorumConfig ring.DoUntilQuorumConfig, f func(context.Context, logproto.QuerierClient) (interface{}, error)) ([]responseFromIngesters, error) {
+	results, err := ring.DoUntilQuorum(ctx, replicationSet, quorumConfig, func(ctx context.Context, ingester *ring.InstanceDesc) (responseFromIngesters, error) {
 		client, err := q.pool.GetClientFor(ingester.Addr)
 		if err != nil {
-			return nil, err
+			return responseFromIngesters{addr: ingester.Addr}, err
 		}
 
 		resp, err := f(ctx, client.(logproto.QuerierClient))
 		if err != nil {
-			return nil, err
+			return responseFromIngesters{addr: ingester.Addr}, err
 		}
 
 		return responseFromIngesters{ingester.Addr, resp}, nil
+	}, func(responseFromIngesters) {
+		// Nothing to do
 	})
+
 	if err != nil {
 		return nil, err
 	}
 
 	responses := make([]responseFromIngesters, 0, len(results))
-	for _, result := range results {
-		responses = append(responses, result.(responseFromIngesters))
-	}
+	responses = append(responses, results...)
 
 	return responses, err
 }
@@ -201,7 +249,7 @@ func (q *IngesterQuerier) TailDisconnectedIngesters(ctx context.Context, req *lo
 	}
 
 	// Instance a tail client for each ingester to re(connect)
-	reconnectClients, err := q.forGivenIngesters(ctx, ring.ReplicationSet{Instances: reconnectIngesters}, func(_ context.Context, client logproto.QuerierClient) (interface{}, error) {
+	reconnectClients, err := q.forGivenIngesters(ctx, ring.ReplicationSet{Instances: reconnectIngesters}, defaultQuorumConfig(), func(_ context.Context, client logproto.QuerierClient) (interface{}, error) {
 		return client.Tail(ctx, req)
 	})
 	if err != nil {
@@ -249,7 +297,7 @@ func (q *IngesterQuerier) TailersCount(ctx context.Context) ([]uint32, error) {
 		return nil, httpgrpc.Errorf(http.StatusInternalServerError, "no active ingester found")
 	}
 
-	responses, err := q.forGivenIngesters(ctx, replicationSet, func(ctx context.Context, querierClient logproto.QuerierClient) (interface{}, error) {
+	responses, err := q.forGivenIngesters(ctx, replicationSet, defaultQuorumConfig(), func(ctx context.Context, querierClient logproto.QuerierClient) (interface{}, error) {
 		resp, err := querierClient.TailersCount(ctx, &logproto.TailersCountRequest{})
 		if err != nil {
 			return nil, err
@@ -262,7 +310,7 @@ func (q *IngesterQuerier) TailersCount(ctx context.Context) ([]uint32, error) {
 		return nil, err
 	}
 
-	counts := make([]uint32, len(responses))
+	counts := make([]uint32, 0, len(responses))
 
 	for _, resp := range responses {
 		counts = append(counts, resp.response.(uint32))
@@ -291,7 +339,7 @@ func (q *IngesterQuerier) GetChunkIDs(ctx context.Context, from, through model.T
 	return chunkIDs, nil
 }
 
-func (q *IngesterQuerier) Stats(ctx context.Context, userID string, from, through model.Time, matchers ...*labels.Matcher) (*index_stats.Stats, error) {
+func (q *IngesterQuerier) Stats(ctx context.Context, _ string, from, through model.Time, matchers ...*labels.Matcher) (*index_stats.Stats, error) {
 	resps, err := q.forAllIngesters(ctx, func(ctx context.Context, querierClient logproto.QuerierClient) (interface{}, error) {
 		return querierClient.GetStats(ctx, &logproto.IndexStatsRequest{
 			From:     from,
@@ -315,6 +363,88 @@ func (q *IngesterQuerier) Stats(ctx context.Context, userID string, from, throug
 
 	merged := index_stats.MergeStats(casted...)
 	return &merged, nil
+}
+
+func (q *IngesterQuerier) Volume(ctx context.Context, _ string, from, through model.Time, limit int32, targetLabels []string, aggregateBy string, matchers ...*labels.Matcher) (*logproto.VolumeResponse, error) {
+	matcherString := "{}"
+	if len(matchers) > 0 {
+		matcherString = syntax.MatchersString(matchers)
+	}
+
+	resps, err := q.forAllIngesters(ctx, func(ctx context.Context, querierClient logproto.QuerierClient) (interface{}, error) {
+		return querierClient.GetVolume(ctx, &logproto.VolumeRequest{
+			From:         from,
+			Through:      through,
+			Matchers:     matcherString,
+			Limit:        limit,
+			TargetLabels: targetLabels,
+			AggregateBy:  aggregateBy,
+		})
+	})
+
+	if err != nil {
+		if isUnimplementedCallError(err) {
+			// Handle communication with older ingesters gracefully
+			return &logproto.VolumeResponse{}, nil
+		}
+		return nil, err
+	}
+
+	casted := make([]*logproto.VolumeResponse, 0, len(resps))
+	for _, resp := range resps {
+		casted = append(casted, resp.response.(*logproto.VolumeResponse))
+	}
+
+	merged := seriesvolume.Merge(casted, limit)
+	return merged, nil
+}
+
+func (q *IngesterQuerier) DetectedLabel(ctx context.Context, req *logproto.DetectedLabelsRequest) (*logproto.LabelToValuesResponse, error) {
+	ingesterResponses, err := q.forAllIngesters(ctx, func(ctx context.Context, client logproto.QuerierClient) (interface{}, error) {
+		return client.GetDetectedLabels(ctx, req)
+	})
+
+	if err != nil {
+		level.Error(q.logger).Log("msg", "error getting detected labels", "err", err)
+		return nil, err
+	}
+
+	labelMap := make(map[string][]string)
+	for _, resp := range ingesterResponses {
+		thisIngester, ok := resp.response.(*logproto.LabelToValuesResponse)
+		if !ok {
+			level.Warn(q.logger).Log("msg", "Cannot convert response to LabelToValuesResponse in detectedlabels",
+				"response", resp)
+		}
+
+		if thisIngester == nil {
+			continue
+		}
+
+		for label, thisIngesterValues := range thisIngester.Labels {
+			var combinedValues []string
+			allIngesterValues, isLabelPresent := labelMap[label]
+			if isLabelPresent {
+				combinedValues = append(allIngesterValues, thisIngesterValues.Values...)
+			} else {
+				combinedValues = thisIngesterValues.Values
+			}
+			labelMap[label] = combinedValues
+		}
+	}
+
+	// Dedupe all ingester values
+	mergedResult := make(map[string]*logproto.UniqueLabelValues)
+	for label, val := range labelMap {
+		slices.Sort(val)
+		uniqueValues := slices.Compact(val)
+
+		mergedResult[label] = &logproto.UniqueLabelValues{
+			Values: uniqueValues,
+		}
+	}
+
+	return &logproto.LabelToValuesResponse{Labels: mergedResult}, nil
 }
 
 func convertMatchersToString(matchers []*labels.Matcher) string {

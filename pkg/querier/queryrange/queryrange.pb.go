@@ -4,19 +4,24 @@
 package queryrange
 
 import (
+	bytes "bytes"
 	fmt "fmt"
+	rpc "github.com/gogo/googleapis/google/rpc"
 	_ "github.com/gogo/protobuf/gogoproto"
 	proto "github.com/gogo/protobuf/proto"
+	github_com_gogo_protobuf_sortkeys "github.com/gogo/protobuf/sortkeys"
 	_ "github.com/gogo/protobuf/types"
 	github_com_gogo_protobuf_types "github.com/gogo/protobuf/types"
-	github_com_grafana_loki_pkg_logproto "github.com/grafana/loki/pkg/logproto"
-	logproto "github.com/grafana/loki/pkg/logproto"
-	stats "github.com/grafana/loki/pkg/logqlmodel/stats"
 	_ "github.com/grafana/loki/pkg/push"
 	github_com_grafana_loki_pkg_push "github.com/grafana/loki/pkg/push"
-	queryrangebase "github.com/grafana/loki/pkg/querier/queryrange/queryrangebase"
-	_ "github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions"
-	github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions "github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions"
+	github_com_grafana_loki_v3_pkg_logproto "github.com/grafana/loki/v3/pkg/logproto"
+	logproto "github.com/grafana/loki/v3/pkg/logproto"
+	stats "github.com/grafana/loki/v3/pkg/logqlmodel/stats"
+	github_com_grafana_loki_v3_pkg_querier_plan "github.com/grafana/loki/v3/pkg/querier/plan"
+	queryrangebase "github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase"
+	_ "github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions"
+	github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions "github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions"
+	resultscache "github.com/grafana/loki/v3/pkg/storage/chunk/cache/resultscache"
 	io "io"
 	math "math"
 	math_bits "math/bits"
@@ -38,15 +43,20 @@ var _ = time.Kitchen
 const _ = proto.GoGoProtoPackageIsVersion3 // please upgrade the proto package
 
 type LokiRequest struct {
-	Query     string             `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
-	Limit     uint32             `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
-	Step      int64              `protobuf:"varint,3,opt,name=step,proto3" json:"step,omitempty"`
-	Interval  int64              `protobuf:"varint,9,opt,name=interval,proto3" json:"interval,omitempty"`
-	StartTs   time.Time          `protobuf:"bytes,4,opt,name=startTs,proto3,stdtime" json:"startTs"`
-	EndTs     time.Time          `protobuf:"bytes,5,opt,name=endTs,proto3,stdtime" json:"endTs"`
-	Direction logproto.Direction `protobuf:"varint,6,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
-	Path      string             `protobuf:"bytes,7,opt,name=path,proto3" json:"path,omitempty"`
-	Shards    []string           `protobuf:"bytes,8,rep,name=shards,proto3" json:"shards"`
+	Query     string                                                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	Limit     uint32                                                 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	Step      int64                                                  `protobuf:"varint,3,opt,name=step,proto3" json:"step,omitempty"`
+	Interval  int64                                                  `protobuf:"varint,9,opt,name=interval,proto3" json:"interval,omitempty"`
+	StartTs   time.Time                                              `protobuf:"bytes,4,opt,name=startTs,proto3,stdtime" json:"startTs"`
+	EndTs     time.Time                                              `protobuf:"bytes,5,opt,name=endTs,proto3,stdtime" json:"endTs"`
+	Direction logproto.Direction                                     `protobuf:"varint,6,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
+	Path      string                                                 `protobuf:"bytes,7,opt,name=path,proto3" json:"path,omitempty"`
+	Shards    []string                                               `protobuf:"bytes,8,rep,name=shards,proto3" json:"shards"`
+	Plan      *github_com_grafana_loki_v3_pkg_querier_plan.QueryPlan `protobuf:"bytes,10,opt,name=plan,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/plan.QueryPlan" json:"plan,omitempty"`
+	// If populated, these represent the chunk references that the querier should
+	// use to fetch the data, plus any other chunks reported by ingesters.
+	StoreChunks    *logproto.ChunkRefGroup     `protobuf:"bytes,11,opt,name=storeChunks,proto3" json:"storeChunks"`
+	CachingOptions resultscache.CachingOptions `protobuf:"bytes,12,opt,name=cachingOptions,proto3" json:"cachingOptions"`
 }
 
 func (m *LokiRequest) Reset()      { *m = LokiRequest{} }
@@ -144,13 +154,32 @@ func (m *LokiRequest) GetShards() []string {
 	return nil
 }
 
+func (m *LokiRequest) GetStoreChunks() *logproto.ChunkRefGroup {
+	if m != nil {
+		return m.StoreChunks
+	}
+	return nil
+}
+
+func (m *LokiRequest) GetCachingOptions() resultscache.CachingOptions {
+	if m != nil {
+		return m.CachingOptions
+	}
+	return resultscache.CachingOptions{}
+}
+
 type LokiInstantRequest struct {
-	Query     string             `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
-	Limit     uint32             `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
-	TimeTs    time.Time          `protobuf:"bytes,3,opt,name=timeTs,proto3,stdtime" json:"timeTs"`
-	Direction logproto.Direction `protobuf:"varint,4,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
-	Path      string             `protobuf:"bytes,5,opt,name=path,proto3" json:"path,omitempty"`
-	Shards    []string           `protobuf:"bytes,6,rep,name=shards,proto3" json:"shards"`
+	Query     string                                                 `protobuf:"bytes,1,opt,name=query,proto3" json:"query,omitempty"`
+	Limit     uint32                                                 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	TimeTs    time.Time                                              `protobuf:"bytes,3,opt,name=timeTs,proto3,stdtime" json:"timeTs"`
+	Direction logproto.Direction                                     `protobuf:"varint,4,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
+	Path      string                                                 `protobuf:"bytes,5,opt,name=path,proto3" json:"path,omitempty"`
+	Shards    []string                                               `protobuf:"bytes,6,rep,name=shards,proto3" json:"shards"`
+	Plan      *github_com_grafana_loki_v3_pkg_querier_plan.QueryPlan `protobuf:"bytes,7,opt,name=plan,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/plan.QueryPlan" json:"plan,omitempty"`
+	// If populated, these represent the chunk references that the querier should
+	// use to fetch the data, plus any other chunks reported by ingesters.
+	StoreChunks    *logproto.ChunkRefGroup     `protobuf:"bytes,8,opt,name=storeChunks,proto3" json:"storeChunks"`
+	CachingOptions resultscache.CachingOptions `protobuf:"bytes,9,opt,name=cachingOptions,proto3" json:"cachingOptions"`
 }
 
 func (m *LokiInstantRequest) Reset()      { *m = LokiInstantRequest{} }
@@ -227,22 +256,80 @@ func (m *LokiInstantRequest) GetShards() []string {
 	return nil
 }
 
+func (m *LokiInstantRequest) GetStoreChunks() *logproto.ChunkRefGroup {
+	if m != nil {
+		return m.StoreChunks
+	}
+	return nil
+}
+
+func (m *LokiInstantRequest) GetCachingOptions() resultscache.CachingOptions {
+	if m != nil {
+		return m.CachingOptions
+	}
+	return resultscache.CachingOptions{}
+}
+
+type Plan struct {
+	Raw []byte `protobuf:"bytes,1,opt,name=raw,proto3" json:"raw,omitempty"`
+}
+
+func (m *Plan) Reset()      { *m = Plan{} }
+func (*Plan) ProtoMessage() {}
+func (*Plan) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{2}
+}
+func (m *Plan) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *Plan) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_Plan.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *Plan) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_Plan.Merge(m, src)
+}
+func (m *Plan) XXX_Size() int {
+	return m.Size()
+}
+func (m *Plan) XXX_DiscardUnknown() {
+	xxx_messageInfo_Plan.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_Plan proto.InternalMessageInfo
+
+func (m *Plan) GetRaw() []byte {
+	if m != nil {
+		return m.Raw
+	}
+	return nil
+}
+
 type LokiResponse struct {
-	Status     string                                                                                               `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
-	Data       LokiData                                                                                             `protobuf:"bytes,2,opt,name=Data,proto3" json:"data,omitempty"`
-	ErrorType  string                                                                                               `protobuf:"bytes,3,opt,name=ErrorType,proto3" json:"errorType,omitempty"`
-	Error      string                                                                                               `protobuf:"bytes,4,opt,name=Error,proto3" json:"error,omitempty"`
-	Direction  logproto.Direction                                                                                   `protobuf:"varint,5,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
-	Limit      uint32                                                                                               `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
-	Version    uint32                                                                                               `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`
-	Statistics stats.Result                                                                                         `protobuf:"bytes,8,opt,name=statistics,proto3" json:"statistics"`
-	Headers    []github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,9,rep,name=Headers,proto3,customtype=github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Status     string                                                                                                  `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
+	Data       LokiData                                                                                                `protobuf:"bytes,2,opt,name=Data,proto3" json:"data,omitempty"`
+	ErrorType  string                                                                                                  `protobuf:"bytes,3,opt,name=ErrorType,proto3" json:"errorType,omitempty"`
+	Error      string                                                                                                  `protobuf:"bytes,4,opt,name=Error,proto3" json:"error,omitempty"`
+	Direction  logproto.Direction                                                                                      `protobuf:"varint,5,opt,name=direction,proto3,enum=logproto.Direction" json:"direction,omitempty"`
+	Limit      uint32                                                                                                  `protobuf:"varint,6,opt,name=limit,proto3" json:"limit,omitempty"`
+	Version    uint32                                                                                                  `protobuf:"varint,7,opt,name=version,proto3" json:"version,omitempty"`
+	Statistics stats.Result                                                                                            `protobuf:"bytes,8,opt,name=statistics,proto3" json:"statistics"`
+	Headers    []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,9,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Warnings   []string                                                                                                `protobuf:"bytes,10,rep,name=warnings,proto3" json:"warnings,omitempty"`
 }
 
 func (m *LokiResponse) Reset()      { *m = LokiResponse{} }
 func (*LokiResponse) ProtoMessage() {}
 func (*LokiResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_51b9d53b40d11902, []int{2}
+	return fileDescriptor_51b9d53b40d11902, []int{3}
 }
 func (m *LokiResponse) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -327,6 +414,13 @@ func (m *LokiResponse) GetStatistics() stats.Result {
 	return stats.Result{}
 }
 
+func (m *LokiResponse) GetWarnings() []string {
+	if m != nil {
+		return m.Warnings
+	}
+	return nil
+}
+
 type LokiSeriesRequest struct {
 	Match   []string  `protobuf:"bytes,1,rep,name=match,proto3" json:"match,omitempty"`
 	StartTs time.Time `protobuf:"bytes,2,opt,name=startTs,proto3,stdtime" json:"startTs"`
@@ -338,7 +432,7 @@ type LokiSeriesRequest struct {
 func (m *LokiSeriesRequest) Reset()      { *m = LokiSeriesRequest{} }
 func (*LokiSeriesRequest) ProtoMessage() {}
 func (*LokiSeriesRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_51b9d53b40d11902, []int{3}
+	return fileDescriptor_51b9d53b40d11902, []int{4}
 }
 func (m *LokiSeriesRequest) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -403,17 +497,17 @@ func (m *LokiSeriesRequest) GetShards() []string {
 }
 
 type LokiSeriesResponse struct {
-	Status     string                                                                                               `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
-	Data       []logproto.SeriesIdentifier                                                                          `protobuf:"bytes,2,rep,name=Data,proto3" json:"data,omitempty"`
-	Version    uint32                                                                                               `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
-	Headers    []github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,4,rep,name=Headers,proto3,customtype=github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
-	Statistics stats.Result                                                                                         `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics"`
+	Status     string                                                                                                  `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
+	Data       []logproto.SeriesIdentifier                                                                             `protobuf:"bytes,2,rep,name=Data,proto3" json:"data,omitempty"`
+	Version    uint32                                                                                                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	Headers    []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,4,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Statistics stats.Result                                                                                            `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics"`
 }
 
 func (m *LokiSeriesResponse) Reset()      { *m = LokiSeriesResponse{} }
 func (*LokiSeriesResponse) ProtoMessage() {}
 func (*LokiSeriesResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_51b9d53b40d11902, []int{4}
+	return fileDescriptor_51b9d53b40d11902, []int{5}
 }
 func (m *LokiSeriesResponse) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -470,71 +564,12 @@ func (m *LokiSeriesResponse) GetStatistics() stats.Result {
 	return stats.Result{}
 }
 
-type LokiLabelNamesRequest struct {
-	StartTs time.Time `protobuf:"bytes,1,opt,name=startTs,proto3,stdtime" json:"startTs"`
-	EndTs   time.Time `protobuf:"bytes,2,opt,name=endTs,proto3,stdtime" json:"endTs"`
-	Path    string    `protobuf:"bytes,3,opt,name=path,proto3" json:"path,omitempty"`
-}
-
-func (m *LokiLabelNamesRequest) Reset()      { *m = LokiLabelNamesRequest{} }
-func (*LokiLabelNamesRequest) ProtoMessage() {}
-func (*LokiLabelNamesRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_51b9d53b40d11902, []int{5}
-}
-func (m *LokiLabelNamesRequest) XXX_Unmarshal(b []byte) error {
-	return m.Unmarshal(b)
-}
-func (m *LokiLabelNamesRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	if deterministic {
-		return xxx_messageInfo_LokiLabelNamesRequest.Marshal(b, m, deterministic)
-	} else {
-		b = b[:cap(b)]
-		n, err := m.MarshalToSizedBuffer(b)
-		if err != nil {
-			return nil, err
-		}
-		return b[:n], nil
-	}
-}
-func (m *LokiLabelNamesRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_LokiLabelNamesRequest.Merge(m, src)
-}
-func (m *LokiLabelNamesRequest) XXX_Size() int {
-	return m.Size()
-}
-func (m *LokiLabelNamesRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_LokiLabelNamesRequest.DiscardUnknown(m)
-}
-
-var xxx_messageInfo_LokiLabelNamesRequest proto.InternalMessageInfo
-
-func (m *LokiLabelNamesRequest) GetStartTs() time.Time {
-	if m != nil {
-		return m.StartTs
-	}
-	return time.Time{}
-}
-
-func (m *LokiLabelNamesRequest) GetEndTs() time.Time {
-	if m != nil {
-		return m.EndTs
-	}
-	return time.Time{}
-}
-
-func (m *LokiLabelNamesRequest) GetPath() string {
-	if m != nil {
-		return m.Path
-	}
-	return ""
-}
-
 type LokiLabelNamesResponse struct {
-	Status     string                                                                                               `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
-	Data       []string                                                                                             `protobuf:"bytes,2,rep,name=Data,proto3" json:"data,omitempty"`
-	Version    uint32                                                                                               `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
-	Headers    []github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,4,rep,name=Headers,proto3,customtype=github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
-	Statistics stats.Result                                                                                         `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics"`
+	Status     string                                                                                                  `protobuf:"bytes,1,opt,name=Status,proto3" json:"status"`
+	Data       []string                                                                                                `protobuf:"bytes,2,rep,name=Data,proto3" json:"data,omitempty"`
+	Version    uint32                                                                                                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"`
+	Headers    []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,4,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Statistics stats.Result                                                                                            `protobuf:"bytes,5,opt,name=statistics,proto3" json:"statistics"`
 }
 
 func (m *LokiLabelNamesResponse) Reset()      { *m = LokiLabelNamesResponse{} }
@@ -694,8 +729,8 @@ func (m *LokiPromResponse) GetStatistics() stats.Result {
 }
 
 type IndexStatsResponse struct {
-	Response *github_com_grafana_loki_pkg_logproto.IndexStatsResponse                                             `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/pkg/logproto.IndexStatsResponse" json:"response,omitempty"`
-	Headers  []github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Response *github_com_grafana_loki_v3_pkg_logproto.IndexStatsResponse                                             `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.IndexStatsResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
 }
 
 func (m *IndexStatsResponse) Reset()      { *m = IndexStatsResponse{} }
@@ -730,17 +765,738 @@ func (m *IndexStatsResponse) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_IndexStatsResponse proto.InternalMessageInfo
 
+type VolumeResponse struct {
+	Response *github_com_grafana_loki_v3_pkg_logproto.VolumeResponse                                                 `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.VolumeResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+}
+
+func (m *VolumeResponse) Reset()      { *m = VolumeResponse{} }
+func (*VolumeResponse) ProtoMessage() {}
+func (*VolumeResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{10}
+}
+func (m *VolumeResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *VolumeResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_VolumeResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *VolumeResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_VolumeResponse.Merge(m, src)
+}
+func (m *VolumeResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *VolumeResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_VolumeResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_VolumeResponse proto.InternalMessageInfo
+
+type TopKSketchesResponse struct {
+	Response   *github_com_grafana_loki_v3_pkg_logproto.TopKMatrix                                                     `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.TopKMatrix" json:"response,omitempty"`
+	Headers    []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Warnings   []string                                                                                                `protobuf:"bytes,3,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	Statistics stats.Result                                                                                            `protobuf:"bytes,4,opt,name=statistics,proto3" json:"statistics"`
+}
+
+func (m *TopKSketchesResponse) Reset()      { *m = TopKSketchesResponse{} }
+func (*TopKSketchesResponse) ProtoMessage() {}
+func (*TopKSketchesResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{11}
+}
+func (m *TopKSketchesResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *TopKSketchesResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_TopKSketchesResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *TopKSketchesResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TopKSketchesResponse.Merge(m, src)
+}
+func (m *TopKSketchesResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *TopKSketchesResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_TopKSketchesResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TopKSketchesResponse proto.InternalMessageInfo
+
+func (m *TopKSketchesResponse) GetWarnings() []string {
+	if m != nil {
+		return m.Warnings
+	}
+	return nil
+}
+
+func (m *TopKSketchesResponse) GetStatistics() stats.Result {
+	if m != nil {
+		return m.Statistics
+	}
+	return stats.Result{}
+}
+
+type QuantileSketchResponse struct {
+	Response   *github_com_grafana_loki_v3_pkg_logproto.QuantileSketchMatrix                                           `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.QuantileSketchMatrix" json:"response,omitempty"`
+	Headers    []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+	Warnings   []string                                                                                                `protobuf:"bytes,3,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	Statistics stats.Result                                                                                            `protobuf:"bytes,4,opt,name=statistics,proto3" json:"statistics"`
+}
+
+func (m *QuantileSketchResponse) Reset()      { *m = QuantileSketchResponse{} }
+func (*QuantileSketchResponse) ProtoMessage() {}
+func (*QuantileSketchResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{12}
+}
+func (m *QuantileSketchResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *QuantileSketchResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_QuantileSketchResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *QuantileSketchResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_QuantileSketchResponse.Merge(m, src)
+}
+func (m *QuantileSketchResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *QuantileSketchResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_QuantileSketchResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_QuantileSketchResponse proto.InternalMessageInfo
+
+func (m *QuantileSketchResponse) GetWarnings() []string {
+	if m != nil {
+		return m.Warnings
+	}
+	return nil
+}
+
+func (m *QuantileSketchResponse) GetStatistics() stats.Result {
+	if m != nil {
+		return m.Statistics
+	}
+	return stats.Result{}
+}
+
+type ShardsResponse struct {
+	Response *github_com_grafana_loki_v3_pkg_logproto.ShardsResponse                                                 `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.ShardsResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+}
+
+func (m *ShardsResponse) Reset()      { *m = ShardsResponse{} }
+func (*ShardsResponse) ProtoMessage() {}
+func (*ShardsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{13}
+}
+func (m *ShardsResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *ShardsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_ShardsResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *ShardsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ShardsResponse.Merge(m, src)
+}
+func (m *ShardsResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *ShardsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_ShardsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_ShardsResponse proto.InternalMessageInfo
+
+type DetectedFieldsResponse struct {
+	Response *github_com_grafana_loki_v3_pkg_logproto.DetectedFieldsResponse                                         `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.DetectedFieldsResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+}
+
+func (m *DetectedFieldsResponse) Reset()      { *m = DetectedFieldsResponse{} }
+func (*DetectedFieldsResponse) ProtoMessage() {}
+func (*DetectedFieldsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{14}
+}
+func (m *DetectedFieldsResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *DetectedFieldsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_DetectedFieldsResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *DetectedFieldsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_DetectedFieldsResponse.Merge(m, src)
+}
+func (m *DetectedFieldsResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *DetectedFieldsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_DetectedFieldsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_DetectedFieldsResponse proto.InternalMessageInfo
+
+type QueryPatternsResponse struct {
+	Response *github_com_grafana_loki_v3_pkg_logproto.QueryPatternsResponse                                          `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.QueryPatternsResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+}
+
+func (m *QueryPatternsResponse) Reset()      { *m = QueryPatternsResponse{} }
+func (*QueryPatternsResponse) ProtoMessage() {}
+func (*QueryPatternsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{15}
+}
+func (m *QueryPatternsResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *QueryPatternsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_QueryPatternsResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *QueryPatternsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_QueryPatternsResponse.Merge(m, src)
+}
+func (m *QueryPatternsResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *QueryPatternsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_QueryPatternsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_QueryPatternsResponse proto.InternalMessageInfo
+
+type DetectedLabelsResponse struct {
+	Response *github_com_grafana_loki_v3_pkg_logproto.DetectedLabelsResponse                                         `protobuf:"bytes,1,opt,name=response,proto3,customtype=github.com/grafana/loki/v3/pkg/logproto.DetectedLabelsResponse" json:"response,omitempty"`
+	Headers  []github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader `protobuf:"bytes,2,rep,name=Headers,proto3,customtype=github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase/definitions.PrometheusResponseHeader" json:"-"`
+}
+
+func (m *DetectedLabelsResponse) Reset()      { *m = DetectedLabelsResponse{} }
+func (*DetectedLabelsResponse) ProtoMessage() {}
+func (*DetectedLabelsResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{16}
+}
+func (m *DetectedLabelsResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *DetectedLabelsResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_DetectedLabelsResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *DetectedLabelsResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_DetectedLabelsResponse.Merge(m, src)
+}
+func (m *DetectedLabelsResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *DetectedLabelsResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_DetectedLabelsResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_DetectedLabelsResponse proto.InternalMessageInfo
+
+type QueryResponse struct {
+	Status *rpc.Status `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	// Types that are valid to be assigned to Response:
+	//	*QueryResponse_Series
+	//	*QueryResponse_Labels
+	//	*QueryResponse_Stats
+	//	*QueryResponse_Prom
+	//	*QueryResponse_Streams
+	//	*QueryResponse_Volume
+	//	*QueryResponse_TopkSketches
+	//	*QueryResponse_QuantileSketches
+	//	*QueryResponse_ShardsResponse
+	//	*QueryResponse_DetectedFields
+	//	*QueryResponse_PatternsResponse
+	//	*QueryResponse_DetectedLabels
+	Response isQueryResponse_Response `protobuf_oneof:"response"`
+}
+
+func (m *QueryResponse) Reset()      { *m = QueryResponse{} }
+func (*QueryResponse) ProtoMessage() {}
+func (*QueryResponse) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{17}
+}
+func (m *QueryResponse) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *QueryResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_QueryResponse.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *QueryResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_QueryResponse.Merge(m, src)
+}
+func (m *QueryResponse) XXX_Size() int {
+	return m.Size()
+}
+func (m *QueryResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_QueryResponse.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_QueryResponse proto.InternalMessageInfo
+
+type isQueryResponse_Response interface {
+	isQueryResponse_Response()
+	Equal(interface{}) bool
+	MarshalTo([]byte) (int, error)
+	Size() int
+}
+
+type QueryResponse_Series struct {
+	Series *LokiSeriesResponse `protobuf:"bytes,2,opt,name=series,proto3,oneof"`
+}
+type QueryResponse_Labels struct {
+	Labels *LokiLabelNamesResponse `protobuf:"bytes,3,opt,name=labels,proto3,oneof"`
+}
+type QueryResponse_Stats struct {
+	Stats *IndexStatsResponse `protobuf:"bytes,4,opt,name=stats,proto3,oneof"`
+}
+type QueryResponse_Prom struct {
+	Prom *LokiPromResponse `protobuf:"bytes,5,opt,name=prom,proto3,oneof"`
+}
+type QueryResponse_Streams struct {
+	Streams *LokiResponse `protobuf:"bytes,6,opt,name=streams,proto3,oneof"`
+}
+type QueryResponse_Volume struct {
+	Volume *VolumeResponse `protobuf:"bytes,7,opt,name=volume,proto3,oneof"`
+}
+type QueryResponse_TopkSketches struct {
+	TopkSketches *TopKSketchesResponse `protobuf:"bytes,8,opt,name=topkSketches,proto3,oneof"`
+}
+type QueryResponse_QuantileSketches struct {
+	QuantileSketches *QuantileSketchResponse `protobuf:"bytes,9,opt,name=quantileSketches,proto3,oneof"`
+}
+type QueryResponse_ShardsResponse struct {
+	ShardsResponse *ShardsResponse `protobuf:"bytes,10,opt,name=shardsResponse,proto3,oneof"`
+}
+type QueryResponse_DetectedFields struct {
+	DetectedFields *DetectedFieldsResponse `protobuf:"bytes,11,opt,name=detectedFields,proto3,oneof"`
+}
+type QueryResponse_PatternsResponse struct {
+	PatternsResponse *QueryPatternsResponse `protobuf:"bytes,12,opt,name=patternsResponse,proto3,oneof"`
+}
+type QueryResponse_DetectedLabels struct {
+	DetectedLabels *DetectedLabelsResponse `protobuf:"bytes,13,opt,name=detectedLabels,proto3,oneof"`
+}
+
+func (*QueryResponse_Series) isQueryResponse_Response()           {}
+func (*QueryResponse_Labels) isQueryResponse_Response()           {}
+func (*QueryResponse_Stats) isQueryResponse_Response()            {}
+func (*QueryResponse_Prom) isQueryResponse_Response()             {}
+func (*QueryResponse_Streams) isQueryResponse_Response()          {}
+func (*QueryResponse_Volume) isQueryResponse_Response()           {}
+func (*QueryResponse_TopkSketches) isQueryResponse_Response()     {}
+func (*QueryResponse_QuantileSketches) isQueryResponse_Response() {}
+func (*QueryResponse_ShardsResponse) isQueryResponse_Response()   {}
+func (*QueryResponse_DetectedFields) isQueryResponse_Response()   {}
+func (*QueryResponse_PatternsResponse) isQueryResponse_Response() {}
+func (*QueryResponse_DetectedLabels) isQueryResponse_Response()   {}
+
+func (m *QueryResponse) GetResponse() isQueryResponse_Response {
+	if m != nil {
+		return m.Response
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetStatus() *rpc.Status {
+	if m != nil {
+		return m.Status
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetSeries() *LokiSeriesResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Series); ok {
+		return x.Series
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetLabels() *LokiLabelNamesResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Labels); ok {
+		return x.Labels
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetStats() *IndexStatsResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Stats); ok {
+		return x.Stats
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetProm() *LokiPromResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Prom); ok {
+		return x.Prom
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetStreams() *LokiResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Streams); ok {
+		return x.Streams
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetVolume() *VolumeResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_Volume); ok {
+		return x.Volume
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetTopkSketches() *TopKSketchesResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_TopkSketches); ok {
+		return x.TopkSketches
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetQuantileSketches() *QuantileSketchResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_QuantileSketches); ok {
+		return x.QuantileSketches
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetShardsResponse() *ShardsResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_ShardsResponse); ok {
+		return x.ShardsResponse
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetDetectedFields() *DetectedFieldsResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_DetectedFields); ok {
+		return x.DetectedFields
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetPatternsResponse() *QueryPatternsResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_PatternsResponse); ok {
+		return x.PatternsResponse
+	}
+	return nil
+}
+
+func (m *QueryResponse) GetDetectedLabels() *DetectedLabelsResponse {
+	if x, ok := m.GetResponse().(*QueryResponse_DetectedLabels); ok {
+		return x.DetectedLabels
+	}
+	return nil
+}
+
+// XXX_OneofWrappers is for the internal use of the proto package.
+func (*QueryResponse) XXX_OneofWrappers() []interface{} {
+	return []interface{}{
+		(*QueryResponse_Series)(nil),
+		(*QueryResponse_Labels)(nil),
+		(*QueryResponse_Stats)(nil),
+		(*QueryResponse_Prom)(nil),
+		(*QueryResponse_Streams)(nil),
+		(*QueryResponse_Volume)(nil),
+		(*QueryResponse_TopkSketches)(nil),
+		(*QueryResponse_QuantileSketches)(nil),
+		(*QueryResponse_ShardsResponse)(nil),
+		(*QueryResponse_DetectedFields)(nil),
+		(*QueryResponse_PatternsResponse)(nil),
+		(*QueryResponse_DetectedLabels)(nil),
+	}
+}
+
+type QueryRequest struct {
+	// Types that are valid to be assigned to Request:
+	//	*QueryRequest_Series
+	//	*QueryRequest_Labels
+	//	*QueryRequest_Stats
+	//	*QueryRequest_Instant
+	//	*QueryRequest_Streams
+	//	*QueryRequest_Volume
+	//	*QueryRequest_ShardsRequest
+	//	*QueryRequest_DetectedFields
+	//	*QueryRequest_PatternsRequest
+	//	*QueryRequest_DetectedLabels
+	Request  isQueryRequest_Request `protobuf_oneof:"request"`
+	Metadata map[string]string      `protobuf:"bytes,7,rep,name=metadata,proto3" json:"metadata" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+}
+
+func (m *QueryRequest) Reset()      { *m = QueryRequest{} }
+func (*QueryRequest) ProtoMessage() {}
+func (*QueryRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_51b9d53b40d11902, []int{18}
+}
+func (m *QueryRequest) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *QueryRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_QueryRequest.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *QueryRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_QueryRequest.Merge(m, src)
+}
+func (m *QueryRequest) XXX_Size() int {
+	return m.Size()
+}
+func (m *QueryRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_QueryRequest.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_QueryRequest proto.InternalMessageInfo
+
+type isQueryRequest_Request interface {
+	isQueryRequest_Request()
+	Equal(interface{}) bool
+	MarshalTo([]byte) (int, error)
+	Size() int
+}
+
+type QueryRequest_Series struct {
+	Series *LokiSeriesRequest `protobuf:"bytes,1,opt,name=series,proto3,oneof"`
+}
+type QueryRequest_Labels struct {
+	Labels *logproto.LabelRequest `protobuf:"bytes,2,opt,name=labels,proto3,oneof"`
+}
+type QueryRequest_Stats struct {
+	Stats *logproto.IndexStatsRequest `protobuf:"bytes,3,opt,name=stats,proto3,oneof"`
+}
+type QueryRequest_Instant struct {
+	Instant *LokiInstantRequest `protobuf:"bytes,4,opt,name=instant,proto3,oneof"`
+}
+type QueryRequest_Streams struct {
+	Streams *LokiRequest `protobuf:"bytes,5,opt,name=streams,proto3,oneof"`
+}
+type QueryRequest_Volume struct {
+	Volume *logproto.VolumeRequest `protobuf:"bytes,6,opt,name=volume,proto3,oneof"`
+}
+type QueryRequest_ShardsRequest struct {
+	ShardsRequest *logproto.ShardsRequest `protobuf:"bytes,8,opt,name=shardsRequest,proto3,oneof"`
+}
+type QueryRequest_DetectedFields struct {
+	DetectedFields *logproto.DetectedFieldsRequest `protobuf:"bytes,9,opt,name=detectedFields,proto3,oneof"`
+}
+type QueryRequest_PatternsRequest struct {
+	PatternsRequest *logproto.QueryPatternsRequest `protobuf:"bytes,10,opt,name=patternsRequest,proto3,oneof"`
+}
+type QueryRequest_DetectedLabels struct {
+	DetectedLabels *logproto.DetectedLabelsRequest `protobuf:"bytes,11,opt,name=detectedLabels,proto3,oneof"`
+}
+
+func (*QueryRequest_Series) isQueryRequest_Request()          {}
+func (*QueryRequest_Labels) isQueryRequest_Request()          {}
+func (*QueryRequest_Stats) isQueryRequest_Request()           {}
+func (*QueryRequest_Instant) isQueryRequest_Request()         {}
+func (*QueryRequest_Streams) isQueryRequest_Request()         {}
+func (*QueryRequest_Volume) isQueryRequest_Request()          {}
+func (*QueryRequest_ShardsRequest) isQueryRequest_Request()   {}
+func (*QueryRequest_DetectedFields) isQueryRequest_Request()  {}
+func (*QueryRequest_PatternsRequest) isQueryRequest_Request() {}
+func (*QueryRequest_DetectedLabels) isQueryRequest_Request()  {}
+
+func (m *QueryRequest) GetRequest() isQueryRequest_Request {
+	if m != nil {
+		return m.Request
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetSeries() *LokiSeriesRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Series); ok {
+		return x.Series
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetLabels() *logproto.LabelRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Labels); ok {
+		return x.Labels
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetStats() *logproto.IndexStatsRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Stats); ok {
+		return x.Stats
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetInstant() *LokiInstantRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Instant); ok {
+		return x.Instant
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetStreams() *LokiRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Streams); ok {
+		return x.Streams
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetVolume() *logproto.VolumeRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_Volume); ok {
+		return x.Volume
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetShardsRequest() *logproto.ShardsRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_ShardsRequest); ok {
+		return x.ShardsRequest
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetDetectedFields() *logproto.DetectedFieldsRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_DetectedFields); ok {
+		return x.DetectedFields
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetPatternsRequest() *logproto.QueryPatternsRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_PatternsRequest); ok {
+		return x.PatternsRequest
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetDetectedLabels() *logproto.DetectedLabelsRequest {
+	if x, ok := m.GetRequest().(*QueryRequest_DetectedLabels); ok {
+		return x.DetectedLabels
+	}
+	return nil
+}
+
+func (m *QueryRequest) GetMetadata() map[string]string {
+	if m != nil {
+		return m.Metadata
+	}
+	return nil
+}
+
+// XXX_OneofWrappers is for the internal use of the proto package.
+func (*QueryRequest) XXX_OneofWrappers() []interface{} {
+	return []interface{}{
+		(*QueryRequest_Series)(nil),
+		(*QueryRequest_Labels)(nil),
+		(*QueryRequest_Stats)(nil),
+		(*QueryRequest_Instant)(nil),
+		(*QueryRequest_Streams)(nil),
+		(*QueryRequest_Volume)(nil),
+		(*QueryRequest_ShardsRequest)(nil),
+		(*QueryRequest_DetectedFields)(nil),
+		(*QueryRequest_PatternsRequest)(nil),
+		(*QueryRequest_DetectedLabels)(nil),
+	}
+}
+
 func init() {
 	proto.RegisterType((*LokiRequest)(nil), "queryrange.LokiRequest")
 	proto.RegisterType((*LokiInstantRequest)(nil), "queryrange.LokiInstantRequest")
+	proto.RegisterType((*Plan)(nil), "queryrange.Plan")
 	proto.RegisterType((*LokiResponse)(nil), "queryrange.LokiResponse")
 	proto.RegisterType((*LokiSeriesRequest)(nil), "queryrange.LokiSeriesRequest")
 	proto.RegisterType((*LokiSeriesResponse)(nil), "queryrange.LokiSeriesResponse")
-	proto.RegisterType((*LokiLabelNamesRequest)(nil), "queryrange.LokiLabelNamesRequest")
 	proto.RegisterType((*LokiLabelNamesResponse)(nil), "queryrange.LokiLabelNamesResponse")
 	proto.RegisterType((*LokiData)(nil), "queryrange.LokiData")
 	proto.RegisterType((*LokiPromResponse)(nil), "queryrange.LokiPromResponse")
 	proto.RegisterType((*IndexStatsResponse)(nil), "queryrange.IndexStatsResponse")
+	proto.RegisterType((*VolumeResponse)(nil), "queryrange.VolumeResponse")
+	proto.RegisterType((*TopKSketchesResponse)(nil), "queryrange.TopKSketchesResponse")
+	proto.RegisterType((*QuantileSketchResponse)(nil), "queryrange.QuantileSketchResponse")
+	proto.RegisterType((*ShardsResponse)(nil), "queryrange.ShardsResponse")
+	proto.RegisterType((*DetectedFieldsResponse)(nil), "queryrange.DetectedFieldsResponse")
+	proto.RegisterType((*QueryPatternsResponse)(nil), "queryrange.QueryPatternsResponse")
+	proto.RegisterType((*DetectedLabelsResponse)(nil), "queryrange.DetectedLabelsResponse")
+	proto.RegisterType((*QueryResponse)(nil), "queryrange.QueryResponse")
+	proto.RegisterType((*QueryRequest)(nil), "queryrange.QueryRequest")
+	proto.RegisterMapType((map[string]string)(nil), "queryrange.QueryRequest.MetadataEntry")
 }
 
 func init() {
@@ -748,69 +1504,129 @@ func init() {
 }
 
 var fileDescriptor_51b9d53b40d11902 = []byte{
-	// 992 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xec, 0x56, 0xdd, 0x6e, 0x23, 0xb5,
-	0x17, 0x8f, 0xf3, 0x1d, 0xf7, 0xbf, 0xfd, 0x83, 0x5b, 0x76, 0x47, 0x05, 0xcd, 0x44, 0x91, 0x60,
-	0x83, 0x04, 0x13, 0xd1, 0xe5, 0x43, 0x7c, 0x08, 0xb1, 0x43, 0x41, 0x54, 0x5a, 0x21, 0x34, 0x9b,
-	0x17, 0x70, 0x3a, 0xee, 0x64, 0xe8, 0x7c, 0xd5, 0xf6, 0xac, 0xe8, 0x1d, 0x0f, 0x00, 0xd2, 0x3e,
-	0x05, 0x20, 0xc1, 0x13, 0xf0, 0x04, 0xbd, 0xec, 0xe5, 0xaa, 0x12, 0x03, 0x4d, 0x6f, 0x20, 0x57,
-	0x7d, 0x04, 0x64, 0x7b, 0x26, 0x71, 0xba, 0x6d, 0xb7, 0xe9, 0xde, 0xec, 0x05, 0x37, 0xc9, 0x39,
-	0xc7, 0xe7, 0x67, 0xfb, 0xfc, 0xce, 0xef, 0x38, 0x81, 0x77, 0xd3, 0x3d, 0x7f, 0xb0, 0x9f, 0x11,
-	0x1a, 0x10, 0x2a, 0xbf, 0x0f, 0x28, 0x8e, 0x7d, 0xa2, 0x99, 0x76, 0x4a, 0x13, 0x9e, 0x20, 0x38,
-	0x8f, 0x6c, 0xac, 0xfb, 0x89, 0x9f, 0xc8, 0xf0, 0x40, 0x58, 0x2a, 0x63, 0xc3, 0xf2, 0x93, 0xc4,
-	0x0f, 0xc9, 0x40, 0x7a, 0xa3, 0x6c, 0x77, 0xc0, 0x83, 0x88, 0x30, 0x8e, 0xa3, 0xb4, 0x48, 0x78,
-	0x55, 0x9c, 0x15, 0x26, 0xbe, 0x42, 0x96, 0x46, 0xb1, 0xd8, 0x2d, 0x16, 0xf7, 0xc3, 0x28, 0xf1,
-	0x48, 0x38, 0x60, 0x1c, 0x73, 0xa6, 0x3e, 0x8b, 0x8c, 0x35, 0x91, 0x91, 0x66, 0x6c, 0x2c, 0x3f,
-	0x8a, 0xe0, 0xe7, 0xcf, 0xbc, 0xff, 0x08, 0x33, 0x32, 0xf0, 0xc8, 0x6e, 0x10, 0x07, 0x3c, 0x48,
-	0x62, 0xa6, 0xdb, 0xc5, 0x26, 0xef, 0x5f, 0x6f, 0x93, 0xf3, 0x9c, 0xf4, 0x8e, 0xaa, 0x70, 0xe5,
-	0x41, 0xb2, 0x17, 0xb8, 0x64, 0x3f, 0x23, 0x8c, 0xa3, 0x75, 0xd8, 0x90, 0x39, 0x06, 0xe8, 0x82,
-	0x7e, 0xc7, 0x55, 0x8e, 0x88, 0x86, 0x41, 0x14, 0x70, 0xa3, 0xda, 0x05, 0xfd, 0x5b, 0xae, 0x72,
-	0x10, 0x82, 0x75, 0xc6, 0x49, 0x6a, 0xd4, 0xba, 0xa0, 0x5f, 0x73, 0xa5, 0x8d, 0x36, 0x60, 0x3b,
-	0x88, 0x39, 0xa1, 0x8f, 0x70, 0x68, 0x74, 0x64, 0x7c, 0xe6, 0xa3, 0x4f, 0x61, 0x8b, 0x71, 0x4c,
-	0xf9, 0x90, 0x19, 0xf5, 0x2e, 0xe8, 0xaf, 0x6c, 0x6e, 0xd8, 0x8a, 0x6f, 0xbb, 0xe4, 0xdb, 0x1e,
-	0x96, 0x7c, 0x3b, 0xed, 0xc3, 0xdc, 0xaa, 0x3c, 0xfe, 0xd3, 0x02, 0x6e, 0x09, 0x42, 0x1f, 0xc1,
-	0x06, 0x89, 0xbd, 0x21, 0x33, 0x1a, 0x4b, 0xa0, 0x15, 0x04, 0xbd, 0x03, 0x3b, 0x5e, 0x40, 0xc9,
-	0x8e, 0xe0, 0xcc, 0x68, 0x76, 0x41, 0x7f, 0x75, 0x73, 0xcd, 0x9e, 0xf5, 0x6f, 0xab, 0x5c, 0x72,
-	0xe7, 0x59, 0xa2, 0xbc, 0x14, 0xf3, 0xb1, 0xd1, 0x92, 0x4c, 0x48, 0x1b, 0xf5, 0x60, 0x93, 0x8d,
-	0x31, 0xf5, 0x98, 0xd1, 0xee, 0xd6, 0xfa, 0x1d, 0x07, 0x4e, 0x73, 0xab, 0x88, 0xb8, 0xc5, 0x77,
-	0xef, 0x1f, 0x00, 0x91, 0xa0, 0x74, 0x3b, 0x66, 0x1c, 0xc7, 0xfc, 0x26, 0xcc, 0x7e, 0x02, 0x9b,
-	0x42, 0x79, 0x43, 0x26, 0xb9, 0xbd, 0x6e, 0xa9, 0x05, 0x66, 0xb1, 0xd6, 0xfa, 0x52, 0xb5, 0x36,
-	0x2e, 0xac, 0xb5, 0x79, 0x69, 0xad, 0xbf, 0xd6, 0xe1, 0xff, 0x94, 0x7c, 0x58, 0x9a, 0xc4, 0x8c,
-	0x08, 0xd0, 0x43, 0x8e, 0x79, 0xc6, 0x54, 0x99, 0x05, 0x48, 0x46, 0xdc, 0x62, 0x05, 0x7d, 0x06,
-	0xeb, 0x5b, 0x98, 0x63, 0x59, 0xf2, 0xca, 0xe6, 0xba, 0xad, 0x89, 0x52, 0xec, 0x25, 0xd6, 0x9c,
-	0xdb, 0xa2, 0xaa, 0x69, 0x6e, 0xad, 0x7a, 0x98, 0xe3, 0xb7, 0x92, 0x28, 0xe0, 0x24, 0x4a, 0xf9,
-	0x81, 0x2b, 0x91, 0xe8, 0x3d, 0xd8, 0xf9, 0x82, 0xd2, 0x84, 0x0e, 0x0f, 0x52, 0x22, 0x29, 0xea,
-	0x38, 0x77, 0xa6, 0xb9, 0xb5, 0x46, 0xca, 0xa0, 0x86, 0x98, 0x67, 0xa2, 0x37, 0x61, 0x43, 0x3a,
-	0x92, 0x94, 0x8e, 0xb3, 0x36, 0xcd, 0xad, 0xff, 0x4b, 0x88, 0x96, 0xae, 0x32, 0x16, 0x39, 0x6c,
-	0x5c, 0x8b, 0xc3, 0x59, 0x2b, 0x9b, 0x7a, 0x2b, 0x0d, 0xd8, 0x7a, 0x44, 0x28, 0x13, 0xdb, 0xb4,
-	0x64, 0xbc, 0x74, 0xd1, 0x7d, 0x08, 0x05, 0x31, 0x01, 0xe3, 0xc1, 0x8e, 0xd0, 0x93, 0x20, 0xe3,
-	0x96, 0xad, 0x9e, 0x0b, 0x97, 0xb0, 0x2c, 0xe4, 0x0e, 0x2a, 0x58, 0xd0, 0x12, 0x5d, 0xcd, 0x46,
-	0xbf, 0x01, 0xd8, 0xfa, 0x8a, 0x60, 0x8f, 0x50, 0x66, 0x74, 0xba, 0xb5, 0xfe, 0xca, 0xe6, 0xeb,
-	0xb6, 0xfe, 0x36, 0x7c, 0x43, 0x93, 0x88, 0xf0, 0x31, 0xc9, 0x58, 0xd9, 0x20, 0x95, 0xed, 0xec,
-	0x1d, 0xe7, 0xd6, 0xc8, 0x0f, 0xf8, 0x38, 0x1b, 0xd9, 0x3b, 0x49, 0x34, 0xf0, 0x29, 0xde, 0xc5,
-	0x31, 0x1e, 0x84, 0xc9, 0x5e, 0x30, 0x58, 0xfa, 0x3d, 0xba, 0xf4, 0x9c, 0x69, 0x6e, 0x81, 0xb7,
-	0xdd, 0xf2, 0x8a, 0xbd, 0x3f, 0x00, 0x7c, 0x59, 0x74, 0xf8, 0xa1, 0xd8, 0x9b, 0x69, 0x83, 0x11,
-	0x61, 0xbe, 0x33, 0x36, 0x80, 0x90, 0x99, 0xab, 0x1c, 0xfd, 0xb1, 0xa8, 0x3e, 0xd7, 0x63, 0x51,
-	0x5b, 0xfe, 0xb1, 0x28, 0xa7, 0xa1, 0x7e, 0xe1, 0x34, 0x34, 0x2e, 0x9d, 0x86, 0x1f, 0x6a, 0x6a,
-	0xf2, 0xcb, 0xfa, 0x96, 0x98, 0x89, 0x2f, 0x67, 0x33, 0x51, 0x93, 0xb7, 0x9d, 0x49, 0x4d, 0xed,
-	0xb5, 0xed, 0x91, 0x98, 0x07, 0xbb, 0x01, 0xa1, 0xcf, 0x98, 0x0c, 0x4d, 0x6e, 0xb5, 0x45, 0xb9,
-	0xe9, 0x5a, 0xa9, 0xbf, 0xf0, 0x5a, 0x39, 0x37, 0x1d, 0x8d, 0x1b, 0x4c, 0x47, 0xef, 0x67, 0x00,
-	0x5f, 0x11, 0xed, 0x78, 0x80, 0x47, 0x24, 0xfc, 0x1a, 0x47, 0x73, 0xc9, 0x69, 0xe2, 0x02, 0xcf,
-	0x25, 0xae, 0xea, 0xcd, 0xc5, 0x55, 0x9b, 0x8b, 0xab, 0x77, 0x56, 0x85, 0xb7, 0xcf, 0xdf, 0x74,
-	0x09, 0xf1, 0xbc, 0xa1, 0x89, 0xa7, 0xe3, 0xa0, 0xff, 0xc4, 0x71, 0x0d, 0x71, 0xfc, 0x04, 0x60,
-	0xbb, 0xfc, 0xb5, 0x41, 0x36, 0x84, 0x0a, 0x26, 0x7f, 0x50, 0x14, 0xd1, 0xab, 0x02, 0x4c, 0x67,
-	0x51, 0x57, 0xcb, 0x40, 0xdf, 0xc2, 0xa6, 0xf2, 0x8a, 0x79, 0xbd, 0xa3, 0xcd, 0x2b, 0xa7, 0x04,
-	0x47, 0xf7, 0x3d, 0x9c, 0x72, 0x42, 0x9d, 0x0f, 0xc5, 0x2d, 0x8e, 0x73, 0xeb, 0xee, 0x55, 0x14,
-	0xc9, 0xff, 0x82, 0x0a, 0x27, 0x9a, 0xab, 0xce, 0x74, 0x8b, 0x13, 0x7a, 0x3f, 0x02, 0xf8, 0x92,
-	0xb8, 0xa8, 0xa0, 0x66, 0xa6, 0x8a, 0x2d, 0xd8, 0xa6, 0x85, 0x5d, 0x28, 0xb8, 0x67, 0x2f, 0xd2,
-	0x7a, 0x01, 0x95, 0x4e, 0xfd, 0x30, 0xb7, 0x80, 0x3b, 0x43, 0xa2, 0x7b, 0x0b, 0x34, 0x56, 0x2f,
-	0xa2, 0x51, 0x40, 0x2a, 0x0b, 0xc4, 0xfd, 0x5e, 0x85, 0x68, 0x3b, 0xf6, 0xc8, 0x77, 0x42, 0x7c,
-	0x73, 0x9d, 0x66, 0x4f, 0xdd, 0xe8, 0xb5, 0x39, 0x29, 0x4f, 0xe7, 0x3b, 0x1f, 0x1f, 0xe7, 0xd6,
-	0x07, 0x57, 0xb1, 0x72, 0x05, 0x58, 0x2b, 0x41, 0x17, 0x6e, 0xf5, 0x85, 0x17, 0xae, 0xf3, 0xee,
-	0xd1, 0x89, 0x59, 0x79, 0x72, 0x62, 0x56, 0xce, 0x4e, 0x4c, 0xf0, 0xfd, 0xc4, 0x04, 0xbf, 0x4c,
-	0x4c, 0x70, 0x38, 0x31, 0xc1, 0xd1, 0xc4, 0x04, 0x7f, 0x4d, 0x4c, 0xf0, 0xf7, 0xc4, 0xac, 0x9c,
-	0x4d, 0x4c, 0xf0, 0xf8, 0xd4, 0xac, 0x1c, 0x9d, 0x9a, 0x95, 0x27, 0xa7, 0x66, 0x65, 0xd4, 0x94,
-	0x44, 0xdc, 0xfb, 0x37, 0x00, 0x00, 0xff, 0xff, 0xe5, 0xe6, 0xf4, 0x15, 0xea, 0x0c, 0x00, 0x00,
+	// 1944 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xec, 0x59, 0xcb, 0x6f, 0x1b, 0xc7,
+	0x19, 0xe7, 0xf2, 0x29, 0x7e, 0x7a, 0x58, 0x1d, 0xab, 0xca, 0x56, 0x71, 0xb8, 0x2c, 0x81, 0x26,
+	0x6a, 0xd1, 0x92, 0x31, 0x95, 0xb8, 0x89, 0xea, 0x1a, 0xf1, 0x5a, 0x76, 0x65, 0xd7, 0x69, 0x9c,
+	0x95, 0xd0, 0x43, 0x2f, 0xc5, 0x88, 0x1c, 0x91, 0x5b, 0x91, 0xbb, 0xeb, 0xdd, 0xa1, 0x6c, 0x01,
+	0x45, 0x91, 0x7f, 0x20, 0x68, 0xee, 0xbd, 0x17, 0xbd, 0x15, 0x05, 0x7a, 0xea, 0xa9, 0xc7, 0xe4,
+	0x50, 0xc0, 0xc7, 0x80, 0x40, 0xb7, 0x35, 0xdd, 0x43, 0xa1, 0x53, 0x80, 0xfe, 0x03, 0xc5, 0x3c,
+	0x76, 0x39, 0x43, 0x52, 0x35, 0xa5, 0x16, 0x05, 0x14, 0xe4, 0x22, 0xcd, 0xe3, 0xfb, 0xcd, 0xce,
+	0xfc, 0xbe, 0xdf, 0xf7, 0xcd, 0x83, 0xf0, 0x46, 0x70, 0xd4, 0x69, 0x3c, 0x1e, 0x90, 0xd0, 0x25,
+	0x21, 0xff, 0x7f, 0x12, 0x62, 0xaf, 0x43, 0x94, 0x62, 0x3d, 0x08, 0x7d, 0xea, 0x23, 0x18, 0xb7,
+	0x6c, 0x34, 0x3b, 0x2e, 0xed, 0x0e, 0x0e, 0xea, 0x2d, 0xbf, 0xdf, 0xe8, 0xf8, 0x1d, 0xbf, 0xd1,
+	0xf1, 0xfd, 0x4e, 0x8f, 0xe0, 0xc0, 0x8d, 0x64, 0xb1, 0x11, 0x06, 0xad, 0x46, 0x44, 0x31, 0x1d,
+	0x44, 0x02, 0xbf, 0xb1, 0xc6, 0x0c, 0x79, 0x91, 0x43, 0x64, 0xab, 0x25, 0xcd, 0x79, 0xed, 0x60,
+	0x70, 0xd8, 0xa0, 0x6e, 0x9f, 0x44, 0x14, 0xf7, 0x83, 0xc4, 0x80, 0xcd, 0xaf, 0xe7, 0x77, 0x04,
+	0xd2, 0xf5, 0xda, 0xe4, 0x69, 0x07, 0x53, 0xf2, 0x04, 0x9f, 0x48, 0x83, 0x57, 0x35, 0x83, 0xa4,
+	0x20, 0x3b, 0x37, 0xb4, 0xce, 0x00, 0x53, 0x4a, 0x42, 0x4f, 0xf6, 0x7d, 0x43, 0xeb, 0x8b, 0x8e,
+	0x08, 0x6d, 0x75, 0x65, 0x57, 0x55, 0x76, 0x3d, 0xee, 0xf5, 0xfd, 0x36, 0xe9, 0xf1, 0x85, 0x44,
+	0xe2, 0xaf, 0xb4, 0xb8, 0xca, 0x2c, 0x82, 0x41, 0xd4, 0xe5, 0x7f, 0x64, 0xe3, 0x9d, 0x97, 0x72,
+	0x79, 0x80, 0x23, 0xd2, 0x68, 0x93, 0x43, 0xd7, 0x73, 0xa9, 0xeb, 0x7b, 0x91, 0x5a, 0x96, 0x83,
+	0xdc, 0x98, 0x6f, 0x90, 0x49, 0xff, 0x6c, 0xbc, 0xc9, 0x70, 0x11, 0xf5, 0x43, 0xdc, 0x21, 0x8d,
+	0x56, 0x77, 0xe0, 0x1d, 0x35, 0x5a, 0xb8, 0xd5, 0x25, 0x8d, 0x90, 0x44, 0x83, 0x1e, 0x8d, 0x44,
+	0x85, 0x9e, 0x04, 0x44, 0x7e, 0xa9, 0xf6, 0x59, 0x1e, 0x16, 0x1f, 0xfa, 0x47, 0xae, 0x43, 0x1e,
+	0x0f, 0x48, 0x44, 0xd1, 0x1a, 0x14, 0xf8, 0xa8, 0xa6, 0x51, 0x35, 0x36, 0xcb, 0x8e, 0xa8, 0xb0,
+	0xd6, 0x9e, 0xdb, 0x77, 0xa9, 0x99, 0xad, 0x1a, 0x9b, 0xcb, 0x8e, 0xa8, 0x20, 0x04, 0xf9, 0x88,
+	0x92, 0xc0, 0xcc, 0x55, 0x8d, 0xcd, 0x9c, 0xc3, 0xcb, 0x68, 0x03, 0x16, 0x5c, 0x8f, 0x92, 0xf0,
+	0x18, 0xf7, 0xcc, 0x32, 0x6f, 0x4f, 0xeb, 0xe8, 0x16, 0x94, 0x22, 0x8a, 0x43, 0xba, 0x1f, 0x99,
+	0xf9, 0xaa, 0xb1, 0xb9, 0xd8, 0xdc, 0xa8, 0x0b, 0xcf, 0xd7, 0x13, 0xcf, 0xd7, 0xf7, 0x13, 0xcf,
+	0xdb, 0x0b, 0x9f, 0xc6, 0x56, 0xe6, 0x93, 0xbf, 0x59, 0x86, 0x93, 0x80, 0xd0, 0x36, 0x14, 0x88,
+	0xd7, 0xde, 0x8f, 0xcc, 0xc2, 0x39, 0xd0, 0x02, 0x82, 0xae, 0x43, 0xb9, 0xed, 0x86, 0xa4, 0xc5,
+	0x58, 0x36, 0x8b, 0x55, 0x63, 0x73, 0xa5, 0x79, 0xb5, 0x9e, 0x0a, 0x65, 0x27, 0xe9, 0x72, 0xc6,
+	0x56, 0x6c, 0x79, 0x01, 0xa6, 0x5d, 0xb3, 0xc4, 0x99, 0xe0, 0x65, 0x54, 0x83, 0x62, 0xd4, 0xc5,
+	0x61, 0x3b, 0x32, 0x17, 0xaa, 0xb9, 0xcd, 0xb2, 0x0d, 0xa7, 0xb1, 0x25, 0x5b, 0x1c, 0xf9, 0x1f,
+	0xfd, 0x1c, 0xf2, 0x41, 0x0f, 0x7b, 0x26, 0xf0, 0x59, 0xae, 0xd6, 0x15, 0x2f, 0x3d, 0xea, 0x61,
+	0xcf, 0x7e, 0x77, 0x18, 0x5b, 0x6f, 0xab, 0xc1, 0x13, 0xe2, 0x43, 0xec, 0xe1, 0x46, 0xcf, 0x3f,
+	0x72, 0x1b, 0xc7, 0x5b, 0x0d, 0xd5, 0xf7, 0x6c, 0xa0, 0xfa, 0x87, 0x6c, 0x00, 0x06, 0x75, 0xf8,
+	0xc0, 0xe8, 0x01, 0x2c, 0x32, 0x1f, 0x93, 0x3b, 0xcc, 0xc1, 0x91, 0xb9, 0xc8, 0xbf, 0xf3, 0xca,
+	0x78, 0x35, 0xbc, 0xdd, 0x21, 0x87, 0x3f, 0x0a, 0xfd, 0x41, 0x60, 0x5f, 0x39, 0x8d, 0x2d, 0xd5,
+	0xde, 0x51, 0x2b, 0xe8, 0x01, 0xac, 0x30, 0x51, 0xb8, 0x5e, 0xe7, 0x83, 0x80, 0x2b, 0xd0, 0x5c,
+	0xe2, 0xc3, 0x5d, 0xab, 0xab, 0x92, 0xa9, 0xdf, 0xd1, 0x6c, 0xec, 0x3c, 0xa3, 0xd7, 0x99, 0x40,
+	0xd6, 0x46, 0x39, 0x40, 0x4c, 0x4b, 0xf7, 0xbd, 0x88, 0x62, 0x8f, 0x5e, 0x44, 0x52, 0x37, 0xa1,
+	0xc8, 0x82, 0x7f, 0x3f, 0xe2, 0xa2, 0x9a, 0xd7, 0xc7, 0x12, 0xa3, 0x3b, 0x39, 0x7f, 0x2e, 0x27,
+	0x17, 0x66, 0x3a, 0xb9, 0xf8, 0x52, 0x27, 0x97, 0xfe, 0x4f, 0x4e, 0x5e, 0xf8, 0xdf, 0x3a, 0xb9,
+	0x7c, 0x61, 0x27, 0x9b, 0x90, 0x67, 0xb3, 0x44, 0xab, 0x90, 0x0b, 0xf1, 0x13, 0xee, 0xd3, 0x25,
+	0x87, 0x15, 0x6b, 0xa3, 0x3c, 0x2c, 0x89, 0x54, 0x12, 0x05, 0xbe, 0x17, 0x11, 0xc6, 0xe3, 0x1e,
+	0xcf, 0xfe, 0xc2, 0xf3, 0x92, 0x47, 0xde, 0xe2, 0xc8, 0x1e, 0xf4, 0x1e, 0xe4, 0x77, 0x30, 0xc5,
+	0x5c, 0x05, 0x8b, 0xcd, 0x35, 0x95, 0x47, 0x36, 0x16, 0xeb, 0xb3, 0xd7, 0xd9, 0x44, 0x4e, 0x63,
+	0x6b, 0xa5, 0x8d, 0x29, 0xfe, 0xae, 0xdf, 0x77, 0x29, 0xe9, 0x07, 0xf4, 0xc4, 0xe1, 0x48, 0xf4,
+	0x36, 0x94, 0xef, 0x86, 0xa1, 0x1f, 0xee, 0x9f, 0x04, 0x84, 0xab, 0xa6, 0x6c, 0xbf, 0x72, 0x1a,
+	0x5b, 0x57, 0x49, 0xd2, 0xa8, 0x20, 0xc6, 0x96, 0xe8, 0xdb, 0x50, 0xe0, 0x15, 0xae, 0x93, 0xb2,
+	0x7d, 0xf5, 0x34, 0xb6, 0xae, 0x70, 0x88, 0x62, 0x2e, 0x2c, 0x74, 0x59, 0x15, 0xe6, 0x92, 0x55,
+	0xaa, 0xee, 0xa2, 0xaa, 0x6e, 0x13, 0x4a, 0xc7, 0x24, 0x8c, 0xd8, 0x30, 0x25, 0xde, 0x9e, 0x54,
+	0xd1, 0x6d, 0x00, 0x46, 0x8c, 0x1b, 0x51, 0xb7, 0x95, 0x38, 0x7b, 0xb9, 0x2e, 0x36, 0x1b, 0x87,
+	0xfb, 0xc8, 0x46, 0x92, 0x05, 0xc5, 0xd0, 0x51, 0xca, 0xe8, 0xf7, 0x06, 0x94, 0x76, 0x09, 0x6e,
+	0x93, 0x90, 0xb9, 0x37, 0xb7, 0xb9, 0xd8, 0xfc, 0x56, 0x5d, 0xdd, 0x59, 0x1e, 0x85, 0x7e, 0x9f,
+	0xd0, 0x2e, 0x19, 0x44, 0x89, 0x83, 0x84, 0xb5, 0xed, 0x0d, 0x63, 0x8b, 0xcc, 0x29, 0xd5, 0xb9,
+	0x36, 0xb4, 0x33, 0x3f, 0x75, 0x1a, 0x5b, 0xc6, 0xf7, 0x9c, 0x64, 0x96, 0xa8, 0x09, 0x0b, 0x4f,
+	0x70, 0xe8, 0xb9, 0x5e, 0x27, 0x32, 0x81, 0x47, 0xda, 0xfa, 0x69, 0x6c, 0xa1, 0xa4, 0x4d, 0x71,
+	0x44, 0x6a, 0x57, 0xfb, 0xab, 0x01, 0x5f, 0x63, 0xc2, 0xd8, 0x63, 0xf3, 0x89, 0x94, 0x14, 0xd3,
+	0xc7, 0xb4, 0xd5, 0x35, 0x0d, 0x36, 0x8c, 0x23, 0x2a, 0xea, 0x7e, 0x93, 0xfd, 0xaf, 0xf6, 0x9b,
+	0xdc, 0xf9, 0xf7, 0x9b, 0x24, 0xaf, 0xe4, 0x67, 0xe6, 0x95, 0xc2, 0x59, 0x79, 0xa5, 0xf6, 0x6b,
+	0x99, 0x43, 0x93, 0xf5, 0x9d, 0x23, 0x94, 0xee, 0xa5, 0xa1, 0x94, 0xe3, 0xb3, 0x4d, 0x15, 0x2a,
+	0xc6, 0xba, 0xdf, 0x26, 0x1e, 0x75, 0x0f, 0x5d, 0x12, 0xbe, 0x24, 0xa0, 0x14, 0x95, 0xe6, 0x74,
+	0x95, 0xaa, 0x12, 0xcb, 0x5f, 0x0a, 0x89, 0xe9, 0x71, 0x55, 0xb8, 0x40, 0x5c, 0xd5, 0xfe, 0x95,
+	0x85, 0x75, 0xe6, 0x91, 0x87, 0xf8, 0x80, 0xf4, 0x7e, 0x82, 0xfb, 0xe7, 0xf4, 0xca, 0xeb, 0x8a,
+	0x57, 0xca, 0x36, 0xfa, 0x8a, 0xf5, 0xf9, 0x58, 0xff, 0xad, 0x01, 0x0b, 0xc9, 0x06, 0x80, 0xea,
+	0x00, 0x02, 0xc6, 0x73, 0xbc, 0xe0, 0x7a, 0x85, 0x81, 0xc3, 0xb4, 0xd5, 0x51, 0x2c, 0xd0, 0x2f,
+	0xa0, 0x28, 0x6a, 0x32, 0x16, 0x94, 0x6d, 0x73, 0x8f, 0x86, 0x04, 0xf7, 0x6f, 0xb7, 0x71, 0x40,
+	0x49, 0x68, 0xbf, 0xcb, 0x66, 0x31, 0x8c, 0xad, 0x37, 0xce, 0x62, 0x29, 0x39, 0xe1, 0x4b, 0x1c,
+	0xf3, 0xaf, 0xf8, 0xa6, 0x23, 0xbf, 0x50, 0xfb, 0xd8, 0x80, 0x55, 0x36, 0x51, 0x46, 0x4d, 0x2a,
+	0x8c, 0x1d, 0x58, 0x08, 0x65, 0x99, 0x4f, 0x77, 0xb1, 0x59, 0xab, 0xeb, 0xb4, 0xce, 0xa0, 0x92,
+	0x6f, 0xb8, 0x86, 0x93, 0x22, 0xd1, 0x96, 0x46, 0x63, 0x76, 0x16, 0x8d, 0x62, 0x8f, 0x56, 0x89,
+	0xfb, 0x73, 0x16, 0xd0, 0x7d, 0x76, 0x43, 0x62, 0xfa, 0x1b, 0x4b, 0xf5, 0xe9, 0xd4, 0x8c, 0xae,
+	0x8d, 0x49, 0x99, 0xb6, 0xb7, 0x6f, 0x0d, 0x63, 0x6b, 0xfb, 0x25, 0xda, 0xf9, 0x0f, 0x78, 0x65,
+	0x15, 0xaa, 0x7c, 0xb3, 0x97, 0x41, 0xbe, 0xb5, 0x3f, 0x66, 0x61, 0xe5, 0xa7, 0x7e, 0x6f, 0xd0,
+	0x27, 0x29, 0x7d, 0xc1, 0x14, 0x7d, 0xe6, 0x98, 0x3e, 0xdd, 0xd6, 0xde, 0x1e, 0xc6, 0xd6, 0x8d,
+	0x79, 0xa9, 0xd3, 0xb1, 0x97, 0x9a, 0xb6, 0xdf, 0xe4, 0x60, 0x6d, 0xdf, 0x0f, 0x7e, 0xbc, 0xc7,
+	0x6f, 0xd1, 0x4a, 0x9a, 0xec, 0x4e, 0x91, 0xb7, 0x36, 0x26, 0x8f, 0x21, 0xde, 0xc7, 0x34, 0x74,
+	0x9f, 0xda, 0x37, 0x86, 0xb1, 0xd5, 0x9c, 0x97, 0xb8, 0x31, 0xee, 0x32, 0x93, 0xa6, 0x9d, 0x81,
+	0x72, 0xf3, 0x9d, 0x81, 0x26, 0xf2, 0x42, 0x7e, 0xbe, 0xbc, 0xf0, 0x87, 0x1c, 0xac, 0x7f, 0x38,
+	0xc0, 0x1e, 0x75, 0x7b, 0x44, 0x78, 0x28, 0xf5, 0xcf, 0x2f, 0xa7, 0xfc, 0x53, 0x19, 0xfb, 0x47,
+	0xc7, 0x48, 0x4f, 0xbd, 0x37, 0x8c, 0xad, 0x9b, 0xf3, 0x7a, 0x6a, 0xd6, 0x08, 0x5f, 0xf9, 0x6c,
+	0x1e, 0x9f, 0xfd, 0x29, 0x0b, 0x2b, 0x7b, 0xe2, 0x7c, 0x98, 0xb0, 0x75, 0x3c, 0xc3, 0x57, 0xea,
+	0x83, 0x58, 0x70, 0x50, 0xd7, 0x11, 0xe7, 0x4b, 0x47, 0x3a, 0xf6, 0x52, 0xa7, 0xa3, 0xbf, 0x64,
+	0x61, 0x7d, 0x87, 0x50, 0xd2, 0xa2, 0xa4, 0x7d, 0xcf, 0x25, 0x3d, 0x85, 0xc4, 0x8f, 0x8c, 0x29,
+	0x16, 0xab, 0xca, 0x85, 0x6e, 0x26, 0xc8, 0xb6, 0x87, 0xb1, 0x75, 0x6b, 0x5e, 0x1e, 0x67, 0x8f,
+	0x71, 0xa9, 0xf9, 0xfc, 0x2c, 0x0b, 0x5f, 0x17, 0x8f, 0x14, 0xe2, 0x05, 0x75, 0x4c, 0xe7, 0xaf,
+	0xa6, 0xd8, 0xb4, 0xd4, 0xfc, 0x31, 0x03, 0x62, 0xdf, 0x1e, 0xc6, 0xd6, 0x0f, 0xe7, 0x4f, 0x20,
+	0x33, 0x86, 0xf8, 0xd2, 0x68, 0x93, 0xdf, 0x2b, 0xce, 0xab, 0x4d, 0x1d, 0x74, 0x31, 0x6d, 0xea,
+	0x63, 0x5c, 0x6a, 0x3e, 0xff, 0x51, 0x84, 0x65, 0xae, 0x92, 0x94, 0xc6, 0xef, 0x80, 0xbc, 0x88,
+	0x49, 0x0e, 0x51, 0x72, 0x79, 0x0f, 0x83, 0x56, 0x7d, 0x4f, 0x5e, 0xd1, 0x84, 0x05, 0x7a, 0x07,
+	0x8a, 0x11, 0xbf, 0x22, 0xcb, 0x33, 0x76, 0x65, 0xf2, 0x15, 0x4a, 0xbf, 0x8c, 0xef, 0x66, 0x1c,
+	0x69, 0x8f, 0x6e, 0x42, 0xb1, 0xc7, 0x59, 0x94, 0x4f, 0x04, 0xb5, 0x49, 0xe4, 0xf4, 0xa5, 0x91,
+	0xa1, 0x05, 0x06, 0xdd, 0x80, 0x02, 0xdf, 0x00, 0xe4, 0x76, 0xa0, 0x7d, 0x76, 0xfa, 0x48, 0xbd,
+	0x9b, 0x71, 0x84, 0x39, 0x6a, 0x42, 0x3e, 0x08, 0xfd, 0xbe, 0xbc, 0x58, 0x5d, 0x9b, 0xfc, 0xa6,
+	0x7a, 0x13, 0xd9, 0xcd, 0x38, 0xdc, 0x16, 0xbd, 0x05, 0xa5, 0x88, 0x5f, 0x61, 0x22, 0xfe, 0x24,
+	0xc5, 0xce, 0xaf, 0x13, 0x30, 0x05, 0x92, 0x98, 0xa2, 0xb7, 0xa0, 0x78, 0xcc, 0x0f, 0xa8, 0xf2,
+	0x9d, 0x73, 0x43, 0x05, 0xe9, 0x47, 0x57, 0xb6, 0x2e, 0x61, 0x8b, 0xee, 0xc1, 0x12, 0xf5, 0x83,
+	0xa3, 0xe4, 0x1c, 0x28, 0x9f, 0xb3, 0xaa, 0x2a, 0x76, 0xd6, 0x39, 0x71, 0x37, 0xe3, 0x68, 0x38,
+	0xf4, 0x08, 0x56, 0x1f, 0x6b, 0x67, 0x07, 0x92, 0x3c, 0x5c, 0x6a, 0x3c, 0xcf, 0x3e, 0xd5, 0xec,
+	0x66, 0x9c, 0x29, 0x34, 0xda, 0x81, 0x95, 0x48, 0xdb, 0xe1, 0xe4, 0x23, 0xbd, 0xb6, 0x2e, 0x7d,
+	0x0f, 0xdc, 0xcd, 0x38, 0x13, 0x18, 0xf4, 0x10, 0x56, 0xda, 0x5a, 0x7e, 0x97, 0x4f, 0xf0, 0xda,
+	0xac, 0x66, 0xef, 0x00, 0x6c, 0x34, 0x1d, 0x8b, 0x3e, 0x80, 0xd5, 0x60, 0x22, 0xb7, 0xc9, 0x37,
+	0xf8, 0x6f, 0xea, 0xab, 0x9c, 0x91, 0x04, 0xd9, 0x22, 0x27, 0xc1, 0xea, 0xf4, 0x44, 0x88, 0x9b,
+	0xcb, 0x67, 0x4f, 0x4f, 0x4f, 0x02, 0xea, 0xf4, 0x44, 0x8f, 0x0d, 0xe3, 0x74, 0x54, 0xfb, 0xb8,
+	0x08, 0x4b, 0x32, 0xcc, 0xc4, 0xbb, 0xdb, 0xf7, 0xd3, 0xc8, 0x11, 0x51, 0xf6, 0xda, 0x59, 0x91,
+	0xc3, 0xcd, 0x95, 0xc0, 0x79, 0x33, 0x0d, 0x1c, 0x11, 0x72, 0xeb, 0xe3, 0x14, 0xc7, 0xbf, 0xab,
+	0x20, 0x64, 0xb0, 0x6c, 0x25, 0xc1, 0x22, 0x22, 0xed, 0xd5, 0xd9, 0xb7, 0xd7, 0x04, 0x25, 0x23,
+	0x65, 0x1b, 0x4a, 0xae, 0xf8, 0x31, 0x62, 0x56, 0x8c, 0x4d, 0xff, 0x56, 0xc1, 0xb4, 0x2f, 0x01,
+	0x68, 0x6b, 0x1c, 0x31, 0x05, 0xf9, 0xf8, 0x3e, 0x15, 0x31, 0x29, 0x28, 0x09, 0x98, 0xeb, 0x69,
+	0xc0, 0x14, 0x27, 0x1f, 0xec, 0x93, 0x70, 0x49, 0x17, 0x26, 0xa3, 0xe5, 0x2e, 0x2c, 0x27, 0xfa,
+	0xe2, 0x5d, 0x32, 0x5c, 0x5e, 0x3b, 0xeb, 0x58, 0x97, 0xe0, 0x75, 0x14, 0xba, 0x3f, 0x25, 0xca,
+	0xf2, 0xe4, 0x56, 0x3c, 0x29, 0xc9, 0x64, 0xa4, 0x49, 0x45, 0x3e, 0x80, 0x2b, 0x63, 0x51, 0x89,
+	0x39, 0xc1, 0xf4, 0xb5, 0x40, 0x93, 0x63, 0x32, 0xd4, 0x24, 0x50, 0x9d, 0x96, 0x14, 0xe3, 0xe2,
+	0x59, 0xd3, 0x4a, 0xa4, 0x38, 0x35, 0x2d, 0xd1, 0x81, 0x76, 0x61, 0xa1, 0x4f, 0x28, 0x6e, 0x63,
+	0x8a, 0xcd, 0x12, 0xdf, 0x96, 0x5e, 0x9f, 0x0a, 0x10, 0x89, 0xae, 0xbf, 0x2f, 0x0d, 0xef, 0x7a,
+	0x34, 0x3c, 0x91, 0x27, 0xeb, 0x14, 0xbd, 0xf1, 0x03, 0x58, 0xd6, 0x0c, 0xd0, 0x2a, 0xe4, 0x8e,
+	0x48, 0xf2, 0x03, 0x15, 0x2b, 0xa2, 0x35, 0x28, 0x1c, 0xe3, 0xde, 0x80, 0x70, 0x7d, 0x96, 0x1d,
+	0x51, 0xd9, 0xce, 0xbe, 0x63, 0xd8, 0x65, 0x28, 0x85, 0xe2, 0x2b, 0x76, 0xe7, 0xd9, 0xf3, 0x4a,
+	0xe6, 0xf3, 0xe7, 0x95, 0xcc, 0x17, 0xcf, 0x2b, 0xc6, 0x47, 0xa3, 0x8a, 0xf1, 0xbb, 0x51, 0xc5,
+	0xf8, 0x74, 0x54, 0x31, 0x9e, 0x8d, 0x2a, 0xc6, 0xdf, 0x47, 0x15, 0xe3, 0x9f, 0xa3, 0x4a, 0xe6,
+	0x8b, 0x51, 0xc5, 0xf8, 0xe4, 0x45, 0x25, 0xf3, 0xec, 0x45, 0x25, 0xf3, 0xf9, 0x8b, 0x4a, 0xe6,
+	0x67, 0xd7, 0xcf, 0xbd, 0x43, 0x1e, 0x14, 0x39, 0x53, 0x5b, 0xff, 0x0e, 0x00, 0x00, 0xff, 0xff,
+	0x6b, 0xd4, 0xf8, 0x77, 0xa9, 0x1f, 0x00, 0x00,
 }
 
 func (this *LokiRequest) Equal(that interface{}) bool {
@@ -864,6 +1680,19 @@ func (this *LokiRequest) Equal(that interface{}) bool {
 			return false
 		}
 	}
+	if that1.Plan == nil {
+		if this.Plan != nil {
+			return false
+		}
+	} else if !this.Plan.Equal(*that1.Plan) {
+		return false
+	}
+	if !this.StoreChunks.Equal(that1.StoreChunks) {
+		return false
+	}
+	if !this.CachingOptions.Equal(&that1.CachingOptions) {
+		return false
+	}
 	return true
 }
 func (this *LokiInstantRequest) Equal(that interface{}) bool {
@@ -907,6 +1736,43 @@ func (this *LokiInstantRequest) Equal(that interface{}) bool {
 		if this.Shards[i] != that1.Shards[i] {
 			return false
 		}
+	}
+	if that1.Plan == nil {
+		if this.Plan != nil {
+			return false
+		}
+	} else if !this.Plan.Equal(*that1.Plan) {
+		return false
+	}
+	if !this.StoreChunks.Equal(that1.StoreChunks) {
+		return false
+	}
+	if !this.CachingOptions.Equal(&that1.CachingOptions) {
+		return false
+	}
+	return true
+}
+func (this *Plan) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*Plan)
+	if !ok {
+		that2, ok := that.(Plan)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !bytes.Equal(this.Raw, that1.Raw) {
+		return false
 	}
 	return true
 }
@@ -958,6 +1824,14 @@ func (this *LokiResponse) Equal(that interface{}) bool {
 	}
 	for i := range this.Headers {
 		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	if len(this.Warnings) != len(that1.Warnings) {
+		return false
+	}
+	for i := range this.Warnings {
+		if this.Warnings[i] != that1.Warnings[i] {
 			return false
 		}
 	}
@@ -1051,36 +1925,6 @@ func (this *LokiSeriesResponse) Equal(that interface{}) bool {
 		}
 	}
 	if !this.Statistics.Equal(&that1.Statistics) {
-		return false
-	}
-	return true
-}
-func (this *LokiLabelNamesRequest) Equal(that interface{}) bool {
-	if that == nil {
-		return this == nil
-	}
-
-	that1, ok := that.(*LokiLabelNamesRequest)
-	if !ok {
-		that2, ok := that.(LokiLabelNamesRequest)
-		if ok {
-			that1 = &that2
-		} else {
-			return false
-		}
-	}
-	if that1 == nil {
-		return this == nil
-	} else if this == nil {
-		return false
-	}
-	if !this.StartTs.Equal(that1.StartTs) {
-		return false
-	}
-	if !this.EndTs.Equal(that1.EndTs) {
-		return false
-	}
-	if this.Path != that1.Path {
 		return false
 	}
 	return true
@@ -1226,11 +2070,884 @@ func (this *IndexStatsResponse) Equal(that interface{}) bool {
 	}
 	return true
 }
+func (this *VolumeResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*VolumeResponse)
+	if !ok {
+		that2, ok := that.(VolumeResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	return true
+}
+func (this *TopKSketchesResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*TopKSketchesResponse)
+	if !ok {
+		that2, ok := that.(TopKSketchesResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	if len(this.Warnings) != len(that1.Warnings) {
+		return false
+	}
+	for i := range this.Warnings {
+		if this.Warnings[i] != that1.Warnings[i] {
+			return false
+		}
+	}
+	if !this.Statistics.Equal(&that1.Statistics) {
+		return false
+	}
+	return true
+}
+func (this *QuantileSketchResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QuantileSketchResponse)
+	if !ok {
+		that2, ok := that.(QuantileSketchResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	if len(this.Warnings) != len(that1.Warnings) {
+		return false
+	}
+	for i := range this.Warnings {
+		if this.Warnings[i] != that1.Warnings[i] {
+			return false
+		}
+	}
+	if !this.Statistics.Equal(&that1.Statistics) {
+		return false
+	}
+	return true
+}
+func (this *ShardsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*ShardsResponse)
+	if !ok {
+		that2, ok := that.(ShardsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	return true
+}
+func (this *DetectedFieldsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*DetectedFieldsResponse)
+	if !ok {
+		that2, ok := that.(DetectedFieldsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	return true
+}
+func (this *QueryPatternsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryPatternsResponse)
+	if !ok {
+		that2, ok := that.(QueryPatternsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	return true
+}
+func (this *DetectedLabelsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*DetectedLabelsResponse)
+	if !ok {
+		that2, ok := that.(DetectedLabelsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if !this.Response.Equal(*that1.Response) {
+		return false
+	}
+	if len(this.Headers) != len(that1.Headers) {
+		return false
+	}
+	for i := range this.Headers {
+		if !this.Headers[i].Equal(that1.Headers[i]) {
+			return false
+		}
+	}
+	return true
+}
+func (this *QueryResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse)
+	if !ok {
+		that2, ok := that.(QueryResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Status.Equal(that1.Status) {
+		return false
+	}
+	if that1.Response == nil {
+		if this.Response != nil {
+			return false
+		}
+	} else if this.Response == nil {
+		return false
+	} else if !this.Response.Equal(that1.Response) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Series) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Series)
+	if !ok {
+		that2, ok := that.(QueryResponse_Series)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Series.Equal(that1.Series) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Labels) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Labels)
+	if !ok {
+		that2, ok := that.(QueryResponse_Labels)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Labels.Equal(that1.Labels) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Stats) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Stats)
+	if !ok {
+		that2, ok := that.(QueryResponse_Stats)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Stats.Equal(that1.Stats) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Prom) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Prom)
+	if !ok {
+		that2, ok := that.(QueryResponse_Prom)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Prom.Equal(that1.Prom) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Streams) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Streams)
+	if !ok {
+		that2, ok := that.(QueryResponse_Streams)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Streams.Equal(that1.Streams) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_Volume) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_Volume)
+	if !ok {
+		that2, ok := that.(QueryResponse_Volume)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Volume.Equal(that1.Volume) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_TopkSketches) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_TopkSketches)
+	if !ok {
+		that2, ok := that.(QueryResponse_TopkSketches)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.TopkSketches.Equal(that1.TopkSketches) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_QuantileSketches) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_QuantileSketches)
+	if !ok {
+		that2, ok := that.(QueryResponse_QuantileSketches)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.QuantileSketches.Equal(that1.QuantileSketches) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_ShardsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_ShardsResponse)
+	if !ok {
+		that2, ok := that.(QueryResponse_ShardsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.ShardsResponse.Equal(that1.ShardsResponse) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_DetectedFields) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_DetectedFields)
+	if !ok {
+		that2, ok := that.(QueryResponse_DetectedFields)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.DetectedFields.Equal(that1.DetectedFields) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_PatternsResponse) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_PatternsResponse)
+	if !ok {
+		that2, ok := that.(QueryResponse_PatternsResponse)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.PatternsResponse.Equal(that1.PatternsResponse) {
+		return false
+	}
+	return true
+}
+func (this *QueryResponse_DetectedLabels) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryResponse_DetectedLabels)
+	if !ok {
+		that2, ok := that.(QueryResponse_DetectedLabels)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.DetectedLabels.Equal(that1.DetectedLabels) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest)
+	if !ok {
+		that2, ok := that.(QueryRequest)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if that1.Request == nil {
+		if this.Request != nil {
+			return false
+		}
+	} else if this.Request == nil {
+		return false
+	} else if !this.Request.Equal(that1.Request) {
+		return false
+	}
+	if len(this.Metadata) != len(that1.Metadata) {
+		return false
+	}
+	for i := range this.Metadata {
+		if this.Metadata[i] != that1.Metadata[i] {
+			return false
+		}
+	}
+	return true
+}
+func (this *QueryRequest_Series) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Series)
+	if !ok {
+		that2, ok := that.(QueryRequest_Series)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Series.Equal(that1.Series) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_Labels) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Labels)
+	if !ok {
+		that2, ok := that.(QueryRequest_Labels)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Labels.Equal(that1.Labels) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_Stats) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Stats)
+	if !ok {
+		that2, ok := that.(QueryRequest_Stats)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Stats.Equal(that1.Stats) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_Instant) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Instant)
+	if !ok {
+		that2, ok := that.(QueryRequest_Instant)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Instant.Equal(that1.Instant) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_Streams) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Streams)
+	if !ok {
+		that2, ok := that.(QueryRequest_Streams)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Streams.Equal(that1.Streams) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_Volume) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_Volume)
+	if !ok {
+		that2, ok := that.(QueryRequest_Volume)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.Volume.Equal(that1.Volume) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_ShardsRequest) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_ShardsRequest)
+	if !ok {
+		that2, ok := that.(QueryRequest_ShardsRequest)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.ShardsRequest.Equal(that1.ShardsRequest) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_DetectedFields) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_DetectedFields)
+	if !ok {
+		that2, ok := that.(QueryRequest_DetectedFields)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.DetectedFields.Equal(that1.DetectedFields) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_PatternsRequest) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_PatternsRequest)
+	if !ok {
+		that2, ok := that.(QueryRequest_PatternsRequest)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.PatternsRequest.Equal(that1.PatternsRequest) {
+		return false
+	}
+	return true
+}
+func (this *QueryRequest_DetectedLabels) Equal(that interface{}) bool {
+	if that == nil {
+		return this == nil
+	}
+
+	that1, ok := that.(*QueryRequest_DetectedLabels)
+	if !ok {
+		that2, ok := that.(QueryRequest_DetectedLabels)
+		if ok {
+			that1 = &that2
+		} else {
+			return false
+		}
+	}
+	if that1 == nil {
+		return this == nil
+	} else if this == nil {
+		return false
+	}
+	if !this.DetectedLabels.Equal(that1.DetectedLabels) {
+		return false
+	}
+	return true
+}
 func (this *LokiRequest) GoString() string {
 	if this == nil {
 		return "nil"
 	}
-	s := make([]string, 0, 13)
+	s := make([]string, 0, 16)
 	s = append(s, "&queryrange.LokiRequest{")
 	s = append(s, "Query: "+fmt.Sprintf("%#v", this.Query)+",\n")
 	s = append(s, "Limit: "+fmt.Sprintf("%#v", this.Limit)+",\n")
@@ -1241,6 +2958,11 @@ func (this *LokiRequest) GoString() string {
 	s = append(s, "Direction: "+fmt.Sprintf("%#v", this.Direction)+",\n")
 	s = append(s, "Path: "+fmt.Sprintf("%#v", this.Path)+",\n")
 	s = append(s, "Shards: "+fmt.Sprintf("%#v", this.Shards)+",\n")
+	s = append(s, "Plan: "+fmt.Sprintf("%#v", this.Plan)+",\n")
+	if this.StoreChunks != nil {
+		s = append(s, "StoreChunks: "+fmt.Sprintf("%#v", this.StoreChunks)+",\n")
+	}
+	s = append(s, "CachingOptions: "+strings.Replace(this.CachingOptions.GoString(), `&`, ``, 1)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -1248,7 +2970,7 @@ func (this *LokiInstantRequest) GoString() string {
 	if this == nil {
 		return "nil"
 	}
-	s := make([]string, 0, 10)
+	s := make([]string, 0, 13)
 	s = append(s, "&queryrange.LokiInstantRequest{")
 	s = append(s, "Query: "+fmt.Sprintf("%#v", this.Query)+",\n")
 	s = append(s, "Limit: "+fmt.Sprintf("%#v", this.Limit)+",\n")
@@ -1256,6 +2978,21 @@ func (this *LokiInstantRequest) GoString() string {
 	s = append(s, "Direction: "+fmt.Sprintf("%#v", this.Direction)+",\n")
 	s = append(s, "Path: "+fmt.Sprintf("%#v", this.Path)+",\n")
 	s = append(s, "Shards: "+fmt.Sprintf("%#v", this.Shards)+",\n")
+	s = append(s, "Plan: "+fmt.Sprintf("%#v", this.Plan)+",\n")
+	if this.StoreChunks != nil {
+		s = append(s, "StoreChunks: "+fmt.Sprintf("%#v", this.StoreChunks)+",\n")
+	}
+	s = append(s, "CachingOptions: "+strings.Replace(this.CachingOptions.GoString(), `&`, ``, 1)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *Plan) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 5)
+	s = append(s, "&queryrange.Plan{")
+	s = append(s, "Raw: "+fmt.Sprintf("%#v", this.Raw)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -1263,7 +3000,7 @@ func (this *LokiResponse) GoString() string {
 	if this == nil {
 		return "nil"
 	}
-	s := make([]string, 0, 13)
+	s := make([]string, 0, 14)
 	s = append(s, "&queryrange.LokiResponse{")
 	s = append(s, "Status: "+fmt.Sprintf("%#v", this.Status)+",\n")
 	s = append(s, "Data: "+strings.Replace(this.Data.GoString(), `&`, ``, 1)+",\n")
@@ -1274,6 +3011,7 @@ func (this *LokiResponse) GoString() string {
 	s = append(s, "Version: "+fmt.Sprintf("%#v", this.Version)+",\n")
 	s = append(s, "Statistics: "+strings.Replace(this.Statistics.GoString(), `&`, ``, 1)+",\n")
 	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "Warnings: "+fmt.Sprintf("%#v", this.Warnings)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -1308,18 +3046,6 @@ func (this *LokiSeriesResponse) GoString() string {
 	s = append(s, "Version: "+fmt.Sprintf("%#v", this.Version)+",\n")
 	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
 	s = append(s, "Statistics: "+strings.Replace(this.Statistics.GoString(), `&`, ``, 1)+",\n")
-	s = append(s, "}")
-	return strings.Join(s, "")
-}
-func (this *LokiLabelNamesRequest) GoString() string {
-	if this == nil {
-		return "nil"
-	}
-	s := make([]string, 0, 7)
-	s = append(s, "&queryrange.LokiLabelNamesRequest{")
-	s = append(s, "StartTs: "+fmt.Sprintf("%#v", this.StartTs)+",\n")
-	s = append(s, "EndTs: "+fmt.Sprintf("%#v", this.EndTs)+",\n")
-	s = append(s, "Path: "+fmt.Sprintf("%#v", this.Path)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -1372,6 +3098,303 @@ func (this *IndexStatsResponse) GoString() string {
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
+func (this *VolumeResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 6)
+	s = append(s, "&queryrange.VolumeResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *TopKSketchesResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 8)
+	s = append(s, "&queryrange.TopKSketchesResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "Warnings: "+fmt.Sprintf("%#v", this.Warnings)+",\n")
+	s = append(s, "Statistics: "+strings.Replace(this.Statistics.GoString(), `&`, ``, 1)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *QuantileSketchResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 8)
+	s = append(s, "&queryrange.QuantileSketchResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "Warnings: "+fmt.Sprintf("%#v", this.Warnings)+",\n")
+	s = append(s, "Statistics: "+strings.Replace(this.Statistics.GoString(), `&`, ``, 1)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *ShardsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 6)
+	s = append(s, "&queryrange.ShardsResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *DetectedFieldsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 6)
+	s = append(s, "&queryrange.DetectedFieldsResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *QueryPatternsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 6)
+	s = append(s, "&queryrange.QueryPatternsResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *DetectedLabelsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 6)
+	s = append(s, "&queryrange.DetectedLabelsResponse{")
+	s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	s = append(s, "Headers: "+fmt.Sprintf("%#v", this.Headers)+",\n")
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *QueryResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 17)
+	s = append(s, "&queryrange.QueryResponse{")
+	if this.Status != nil {
+		s = append(s, "Status: "+fmt.Sprintf("%#v", this.Status)+",\n")
+	}
+	if this.Response != nil {
+		s = append(s, "Response: "+fmt.Sprintf("%#v", this.Response)+",\n")
+	}
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *QueryResponse_Series) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Series{` +
+		`Series:` + fmt.Sprintf("%#v", this.Series) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_Labels) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Labels{` +
+		`Labels:` + fmt.Sprintf("%#v", this.Labels) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_Stats) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Stats{` +
+		`Stats:` + fmt.Sprintf("%#v", this.Stats) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_Prom) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Prom{` +
+		`Prom:` + fmt.Sprintf("%#v", this.Prom) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_Streams) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Streams{` +
+		`Streams:` + fmt.Sprintf("%#v", this.Streams) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_Volume) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_Volume{` +
+		`Volume:` + fmt.Sprintf("%#v", this.Volume) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_TopkSketches) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_TopkSketches{` +
+		`TopkSketches:` + fmt.Sprintf("%#v", this.TopkSketches) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_QuantileSketches) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_QuantileSketches{` +
+		`QuantileSketches:` + fmt.Sprintf("%#v", this.QuantileSketches) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_ShardsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_ShardsResponse{` +
+		`ShardsResponse:` + fmt.Sprintf("%#v", this.ShardsResponse) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_DetectedFields) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_DetectedFields{` +
+		`DetectedFields:` + fmt.Sprintf("%#v", this.DetectedFields) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_PatternsResponse) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_PatternsResponse{` +
+		`PatternsResponse:` + fmt.Sprintf("%#v", this.PatternsResponse) + `}`}, ", ")
+	return s
+}
+func (this *QueryResponse_DetectedLabels) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryResponse_DetectedLabels{` +
+		`DetectedLabels:` + fmt.Sprintf("%#v", this.DetectedLabels) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := make([]string, 0, 15)
+	s = append(s, "&queryrange.QueryRequest{")
+	if this.Request != nil {
+		s = append(s, "Request: "+fmt.Sprintf("%#v", this.Request)+",\n")
+	}
+	keysForMetadata := make([]string, 0, len(this.Metadata))
+	for k, _ := range this.Metadata {
+		keysForMetadata = append(keysForMetadata, k)
+	}
+	github_com_gogo_protobuf_sortkeys.Strings(keysForMetadata)
+	mapStringForMetadata := "map[string]string{"
+	for _, k := range keysForMetadata {
+		mapStringForMetadata += fmt.Sprintf("%#v: %#v,", k, this.Metadata[k])
+	}
+	mapStringForMetadata += "}"
+	if this.Metadata != nil {
+		s = append(s, "Metadata: "+mapStringForMetadata+",\n")
+	}
+	s = append(s, "}")
+	return strings.Join(s, "")
+}
+func (this *QueryRequest_Series) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Series{` +
+		`Series:` + fmt.Sprintf("%#v", this.Series) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_Labels) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Labels{` +
+		`Labels:` + fmt.Sprintf("%#v", this.Labels) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_Stats) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Stats{` +
+		`Stats:` + fmt.Sprintf("%#v", this.Stats) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_Instant) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Instant{` +
+		`Instant:` + fmt.Sprintf("%#v", this.Instant) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_Streams) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Streams{` +
+		`Streams:` + fmt.Sprintf("%#v", this.Streams) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_Volume) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_Volume{` +
+		`Volume:` + fmt.Sprintf("%#v", this.Volume) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_ShardsRequest) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_ShardsRequest{` +
+		`ShardsRequest:` + fmt.Sprintf("%#v", this.ShardsRequest) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_DetectedFields) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_DetectedFields{` +
+		`DetectedFields:` + fmt.Sprintf("%#v", this.DetectedFields) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_PatternsRequest) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_PatternsRequest{` +
+		`PatternsRequest:` + fmt.Sprintf("%#v", this.PatternsRequest) + `}`}, ", ")
+	return s
+}
+func (this *QueryRequest_DetectedLabels) GoString() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&queryrange.QueryRequest_DetectedLabels{` +
+		`DetectedLabels:` + fmt.Sprintf("%#v", this.DetectedLabels) + `}`}, ", ")
+	return s
+}
 func valueToGoStringQueryrange(v interface{}, typ string) string {
 	rv := reflect.ValueOf(v)
 	if rv.IsNil() {
@@ -1400,6 +3423,40 @@ func (m *LokiRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	{
+		size, err := m.CachingOptions.MarshalToSizedBuffer(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarintQueryrange(dAtA, i, uint64(size))
+	}
+	i--
+	dAtA[i] = 0x62
+	if m.StoreChunks != nil {
+		{
+			size, err := m.StoreChunks.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x5a
+	}
+	if m.Plan != nil {
+		{
+			size := m.Plan.Size()
+			i -= size
+			if _, err := m.Plan.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x52
+	}
 	if m.Interval != 0 {
 		i = encodeVarintQueryrange(dAtA, i, uint64(m.Interval))
 		i--
@@ -1426,20 +3483,20 @@ func (m *LokiRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x30
 	}
-	n1, err1 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.EndTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs):])
-	if err1 != nil {
-		return 0, err1
+	n4, err4 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.EndTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs):])
+	if err4 != nil {
+		return 0, err4
 	}
-	i -= n1
-	i = encodeVarintQueryrange(dAtA, i, uint64(n1))
+	i -= n4
+	i = encodeVarintQueryrange(dAtA, i, uint64(n4))
 	i--
 	dAtA[i] = 0x2a
-	n2, err2 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.StartTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs):])
-	if err2 != nil {
-		return 0, err2
+	n5, err5 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.StartTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs):])
+	if err5 != nil {
+		return 0, err5
 	}
-	i -= n2
-	i = encodeVarintQueryrange(dAtA, i, uint64(n2))
+	i -= n5
+	i = encodeVarintQueryrange(dAtA, i, uint64(n5))
 	i--
 	dAtA[i] = 0x22
 	if m.Step != 0 {
@@ -1482,6 +3539,40 @@ func (m *LokiInstantRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	{
+		size, err := m.CachingOptions.MarshalToSizedBuffer(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarintQueryrange(dAtA, i, uint64(size))
+	}
+	i--
+	dAtA[i] = 0x4a
+	if m.StoreChunks != nil {
+		{
+			size, err := m.StoreChunks.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x42
+	}
+	if m.Plan != nil {
+		{
+			size := m.Plan.Size()
+			i -= size
+			if _, err := m.Plan.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x3a
+	}
 	if len(m.Shards) > 0 {
 		for iNdEx := len(m.Shards) - 1; iNdEx >= 0; iNdEx-- {
 			i -= len(m.Shards[iNdEx])
@@ -1503,12 +3594,12 @@ func (m *LokiInstantRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x20
 	}
-	n3, err3 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.TimeTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.TimeTs):])
-	if err3 != nil {
-		return 0, err3
+	n9, err9 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.TimeTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.TimeTs):])
+	if err9 != nil {
+		return 0, err9
 	}
-	i -= n3
-	i = encodeVarintQueryrange(dAtA, i, uint64(n3))
+	i -= n9
+	i = encodeVarintQueryrange(dAtA, i, uint64(n9))
 	i--
 	dAtA[i] = 0x1a
 	if m.Limit != 0 {
@@ -1520,6 +3611,36 @@ func (m *LokiInstantRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i -= len(m.Query)
 		copy(dAtA[i:], m.Query)
 		i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Query)))
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *Plan) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *Plan) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *Plan) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Raw) > 0 {
+		i -= len(m.Raw)
+		copy(dAtA[i:], m.Raw)
+		i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Raw)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -1546,6 +3667,15 @@ func (m *LokiResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	if len(m.Warnings) > 0 {
+		for iNdEx := len(m.Warnings) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Warnings[iNdEx])
+			copy(dAtA[i:], m.Warnings[iNdEx])
+			i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Warnings[iNdEx])))
+			i--
+			dAtA[i] = 0x52
+		}
+	}
 	if len(m.Headers) > 0 {
 		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
 			{
@@ -1655,20 +3785,20 @@ func (m *LokiSeriesRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0x22
 	}
-	n6, err6 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.EndTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs):])
-	if err6 != nil {
-		return 0, err6
+	n12, err12 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.EndTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs):])
+	if err12 != nil {
+		return 0, err12
 	}
-	i -= n6
-	i = encodeVarintQueryrange(dAtA, i, uint64(n6))
+	i -= n12
+	i = encodeVarintQueryrange(dAtA, i, uint64(n12))
 	i--
 	dAtA[i] = 0x1a
-	n7, err7 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.StartTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs):])
-	if err7 != nil {
-		return 0, err7
+	n13, err13 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.StartTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs):])
+	if err13 != nil {
+		return 0, err13
 	}
-	i -= n7
-	i = encodeVarintQueryrange(dAtA, i, uint64(n7))
+	i -= n13
+	i = encodeVarintQueryrange(dAtA, i, uint64(n13))
 	i--
 	dAtA[i] = 0x12
 	if len(m.Match) > 0 {
@@ -1753,52 +3883,6 @@ func (m *LokiSeriesResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 		i--
 		dAtA[i] = 0xa
 	}
-	return len(dAtA) - i, nil
-}
-
-func (m *LokiLabelNamesRequest) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *LokiLabelNamesRequest) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *LokiLabelNamesRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if len(m.Path) > 0 {
-		i -= len(m.Path)
-		copy(dAtA[i:], m.Path)
-		i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Path)))
-		i--
-		dAtA[i] = 0x1a
-	}
-	n9, err9 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.EndTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs):])
-	if err9 != nil {
-		return 0, err9
-	}
-	i -= n9
-	i = encodeVarintQueryrange(dAtA, i, uint64(n9))
-	i--
-	dAtA[i] = 0x12
-	n10, err10 := github_com_gogo_protobuf_types.StdTimeMarshalTo(m.StartTs, dAtA[i-github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs):])
-	if err10 != nil {
-		return 0, err10
-	}
-	i -= n10
-	i = encodeVarintQueryrange(dAtA, i, uint64(n10))
-	i--
-	dAtA[i] = 0xa
 	return len(dAtA) - i, nil
 }
 
@@ -2008,6 +4092,922 @@ func (m *IndexStatsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
+func (m *VolumeResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *VolumeResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *VolumeResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *TopKSketchesResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *TopKSketchesResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *TopKSketchesResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	{
+		size, err := m.Statistics.MarshalToSizedBuffer(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarintQueryrange(dAtA, i, uint64(size))
+	}
+	i--
+	dAtA[i] = 0x22
+	if len(m.Warnings) > 0 {
+		for iNdEx := len(m.Warnings) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Warnings[iNdEx])
+			copy(dAtA[i:], m.Warnings[iNdEx])
+			i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Warnings[iNdEx])))
+			i--
+			dAtA[i] = 0x1a
+		}
+	}
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *QuantileSketchResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *QuantileSketchResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *QuantileSketchResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	{
+		size, err := m.Statistics.MarshalToSizedBuffer(dAtA[:i])
+		if err != nil {
+			return 0, err
+		}
+		i -= size
+		i = encodeVarintQueryrange(dAtA, i, uint64(size))
+	}
+	i--
+	dAtA[i] = 0x22
+	if len(m.Warnings) > 0 {
+		for iNdEx := len(m.Warnings) - 1; iNdEx >= 0; iNdEx-- {
+			i -= len(m.Warnings[iNdEx])
+			copy(dAtA[i:], m.Warnings[iNdEx])
+			i = encodeVarintQueryrange(dAtA, i, uint64(len(m.Warnings[iNdEx])))
+			i--
+			dAtA[i] = 0x1a
+		}
+	}
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *ShardsResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *ShardsResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *ShardsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *DetectedFieldsResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *DetectedFieldsResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *DetectedFieldsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *QueryPatternsResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *QueryPatternsResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *QueryPatternsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *DetectedLabelsResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *DetectedLabelsResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *DetectedLabelsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.Headers) > 0 {
+		for iNdEx := len(m.Headers) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size := m.Headers[iNdEx].Size()
+				i -= size
+				if _, err := m.Headers[iNdEx].MarshalTo(dAtA[i:]); err != nil {
+					return 0, err
+				}
+				i = encodeVarintQueryrange(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x12
+		}
+	}
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *QueryResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *QueryResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *QueryResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.Response != nil {
+		{
+			size := m.Response.Size()
+			i -= size
+			if _, err := m.Response.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if m.Status != nil {
+		{
+			size, err := m.Status.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *QueryResponse_Series) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Series) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Series != nil {
+		{
+			size, err := m.Series.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x12
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_Labels) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Labels) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Labels != nil {
+		{
+			size, err := m.Labels.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x1a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_Stats) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Stats) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Stats != nil {
+		{
+			size, err := m.Stats.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x22
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_Prom) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Prom) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Prom != nil {
+		{
+			size, err := m.Prom.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x2a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_Streams) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Streams) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Streams != nil {
+		{
+			size, err := m.Streams.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x32
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_Volume) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_Volume) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Volume != nil {
+		{
+			size, err := m.Volume.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x3a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_TopkSketches) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_TopkSketches) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.TopkSketches != nil {
+		{
+			size, err := m.TopkSketches.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x42
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_QuantileSketches) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_QuantileSketches) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.QuantileSketches != nil {
+		{
+			size, err := m.QuantileSketches.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x4a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_ShardsResponse) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_ShardsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.ShardsResponse != nil {
+		{
+			size, err := m.ShardsResponse.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x52
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_DetectedFields) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_DetectedFields) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.DetectedFields != nil {
+		{
+			size, err := m.DetectedFields.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x5a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_PatternsResponse) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_PatternsResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.PatternsResponse != nil {
+		{
+			size, err := m.PatternsResponse.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x62
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryResponse_DetectedLabels) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryResponse_DetectedLabels) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.DetectedLabels != nil {
+		{
+			size, err := m.DetectedLabels.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x6a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *QueryRequest) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *QueryRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if m.Request != nil {
+		{
+			size := m.Request.Size()
+			i -= size
+			if _, err := m.Request.MarshalTo(dAtA[i:]); err != nil {
+				return 0, err
+			}
+		}
+	}
+	if len(m.Metadata) > 0 {
+		for k := range m.Metadata {
+			v := m.Metadata[k]
+			baseI := i
+			i -= len(v)
+			copy(dAtA[i:], v)
+			i = encodeVarintQueryrange(dAtA, i, uint64(len(v)))
+			i--
+			dAtA[i] = 0x12
+			i -= len(k)
+			copy(dAtA[i:], k)
+			i = encodeVarintQueryrange(dAtA, i, uint64(len(k)))
+			i--
+			dAtA[i] = 0xa
+			i = encodeVarintQueryrange(dAtA, i, uint64(baseI-i))
+			i--
+			dAtA[i] = 0x3a
+		}
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *QueryRequest_Series) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Series) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Series != nil {
+		{
+			size, err := m.Series.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0xa
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_Labels) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Labels) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Labels != nil {
+		{
+			size, err := m.Labels.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x12
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_Stats) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Stats) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Stats != nil {
+		{
+			size, err := m.Stats.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x1a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_Instant) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Instant) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Instant != nil {
+		{
+			size, err := m.Instant.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x22
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_Streams) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Streams) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Streams != nil {
+		{
+			size, err := m.Streams.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x2a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_Volume) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_Volume) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.Volume != nil {
+		{
+			size, err := m.Volume.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x32
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_ShardsRequest) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_ShardsRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.ShardsRequest != nil {
+		{
+			size, err := m.ShardsRequest.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x42
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_DetectedFields) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_DetectedFields) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.DetectedFields != nil {
+		{
+			size, err := m.DetectedFields.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x4a
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_PatternsRequest) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_PatternsRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.PatternsRequest != nil {
+		{
+			size, err := m.PatternsRequest.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x52
+	}
+	return len(dAtA) - i, nil
+}
+func (m *QueryRequest_DetectedLabels) MarshalTo(dAtA []byte) (int, error) {
+	return m.MarshalToSizedBuffer(dAtA[:m.Size()])
+}
+
+func (m *QueryRequest_DetectedLabels) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	if m.DetectedLabels != nil {
+		{
+			size, err := m.DetectedLabels.MarshalToSizedBuffer(dAtA[:i])
+			if err != nil {
+				return 0, err
+			}
+			i -= size
+			i = encodeVarintQueryrange(dAtA, i, uint64(size))
+		}
+		i--
+		dAtA[i] = 0x5a
+	}
+	return len(dAtA) - i, nil
+}
 func encodeVarintQueryrange(dAtA []byte, offset int, v uint64) int {
 	offset -= sovQueryrange(v)
 	base := offset
@@ -2055,6 +5055,16 @@ func (m *LokiRequest) Size() (n int) {
 	if m.Interval != 0 {
 		n += 1 + sovQueryrange(uint64(m.Interval))
 	}
+	if m.Plan != nil {
+		l = m.Plan.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if m.StoreChunks != nil {
+		l = m.StoreChunks.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	l = m.CachingOptions.Size()
+	n += 1 + l + sovQueryrange(uint64(l))
 	return n
 }
 
@@ -2085,6 +5095,29 @@ func (m *LokiInstantRequest) Size() (n int) {
 			l = len(s)
 			n += 1 + l + sovQueryrange(uint64(l))
 		}
+	}
+	if m.Plan != nil {
+		l = m.Plan.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if m.StoreChunks != nil {
+		l = m.StoreChunks.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	l = m.CachingOptions.Size()
+	n += 1 + l + sovQueryrange(uint64(l))
+	return n
+}
+
+func (m *Plan) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	l = len(m.Raw)
+	if l > 0 {
+		n += 1 + l + sovQueryrange(uint64(l))
 	}
 	return n
 }
@@ -2123,6 +5156,12 @@ func (m *LokiResponse) Size() (n int) {
 	if len(m.Headers) > 0 {
 		for _, e := range m.Headers {
 			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	if len(m.Warnings) > 0 {
+		for _, s := range m.Warnings {
+			l = len(s)
 			n += 1 + l + sovQueryrange(uint64(l))
 		}
 	}
@@ -2185,23 +5224,6 @@ func (m *LokiSeriesResponse) Size() (n int) {
 	}
 	l = m.Statistics.Size()
 	n += 1 + l + sovQueryrange(uint64(l))
-	return n
-}
-
-func (m *LokiLabelNamesRequest) Size() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	l = github_com_gogo_protobuf_types.SizeOfStdTime(m.StartTs)
-	n += 1 + l + sovQueryrange(uint64(l))
-	l = github_com_gogo_protobuf_types.SizeOfStdTime(m.EndTs)
-	n += 1 + l + sovQueryrange(uint64(l))
-	l = len(m.Path)
-	if l > 0 {
-		n += 1 + l + sovQueryrange(uint64(l))
-	}
 	return n
 }
 
@@ -2288,6 +5310,456 @@ func (m *IndexStatsResponse) Size() (n int) {
 	return n
 }
 
+func (m *VolumeResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *TopKSketchesResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	if len(m.Warnings) > 0 {
+		for _, s := range m.Warnings {
+			l = len(s)
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	l = m.Statistics.Size()
+	n += 1 + l + sovQueryrange(uint64(l))
+	return n
+}
+
+func (m *QuantileSketchResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	if len(m.Warnings) > 0 {
+		for _, s := range m.Warnings {
+			l = len(s)
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	l = m.Statistics.Size()
+	n += 1 + l + sovQueryrange(uint64(l))
+	return n
+}
+
+func (m *ShardsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *DetectedFieldsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *QueryPatternsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *DetectedLabelsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Response != nil {
+		l = m.Response.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if len(m.Headers) > 0 {
+		for _, e := range m.Headers {
+			l = e.Size()
+			n += 1 + l + sovQueryrange(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *QueryResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Status != nil {
+		l = m.Status.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	if m.Response != nil {
+		n += m.Response.Size()
+	}
+	return n
+}
+
+func (m *QueryResponse_Series) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Series != nil {
+		l = m.Series.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_Labels) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Labels != nil {
+		l = m.Labels.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_Stats) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Stats != nil {
+		l = m.Stats.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_Prom) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Prom != nil {
+		l = m.Prom.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_Streams) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Streams != nil {
+		l = m.Streams.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_Volume) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Volume != nil {
+		l = m.Volume.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_TopkSketches) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.TopkSketches != nil {
+		l = m.TopkSketches.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_QuantileSketches) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.QuantileSketches != nil {
+		l = m.QuantileSketches.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_ShardsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ShardsResponse != nil {
+		l = m.ShardsResponse.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_DetectedFields) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.DetectedFields != nil {
+		l = m.DetectedFields.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_PatternsResponse) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.PatternsResponse != nil {
+		l = m.PatternsResponse.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryResponse_DetectedLabels) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.DetectedLabels != nil {
+		l = m.DetectedLabels.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Request != nil {
+		n += m.Request.Size()
+	}
+	if len(m.Metadata) > 0 {
+		for k, v := range m.Metadata {
+			_ = k
+			_ = v
+			mapEntrySize := 1 + len(k) + sovQueryrange(uint64(len(k))) + 1 + len(v) + sovQueryrange(uint64(len(v)))
+			n += mapEntrySize + 1 + sovQueryrange(uint64(mapEntrySize))
+		}
+	}
+	return n
+}
+
+func (m *QueryRequest_Series) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Series != nil {
+		l = m.Series.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_Labels) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Labels != nil {
+		l = m.Labels.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_Stats) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Stats != nil {
+		l = m.Stats.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_Instant) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Instant != nil {
+		l = m.Instant.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_Streams) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Streams != nil {
+		l = m.Streams.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_Volume) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.Volume != nil {
+		l = m.Volume.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_ShardsRequest) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.ShardsRequest != nil {
+		l = m.ShardsRequest.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_DetectedFields) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.DetectedFields != nil {
+		l = m.DetectedFields.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_PatternsRequest) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.PatternsRequest != nil {
+		l = m.PatternsRequest.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+func (m *QueryRequest_DetectedLabels) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if m.DetectedLabels != nil {
+		l = m.DetectedLabels.Size()
+		n += 1 + l + sovQueryrange(uint64(l))
+	}
+	return n
+}
+
 func sovQueryrange(x uint64) (n int) {
 	return (math_bits.Len64(x|1) + 6) / 7
 }
@@ -2308,6 +5780,9 @@ func (this *LokiRequest) String() string {
 		`Path:` + fmt.Sprintf("%v", this.Path) + `,`,
 		`Shards:` + fmt.Sprintf("%v", this.Shards) + `,`,
 		`Interval:` + fmt.Sprintf("%v", this.Interval) + `,`,
+		`Plan:` + fmt.Sprintf("%v", this.Plan) + `,`,
+		`StoreChunks:` + strings.Replace(fmt.Sprintf("%v", this.StoreChunks), "ChunkRefGroup", "logproto.ChunkRefGroup", 1) + `,`,
+		`CachingOptions:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.CachingOptions), "CachingOptions", "resultscache.CachingOptions", 1), `&`, ``, 1) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -2323,6 +5798,19 @@ func (this *LokiInstantRequest) String() string {
 		`Direction:` + fmt.Sprintf("%v", this.Direction) + `,`,
 		`Path:` + fmt.Sprintf("%v", this.Path) + `,`,
 		`Shards:` + fmt.Sprintf("%v", this.Shards) + `,`,
+		`Plan:` + fmt.Sprintf("%v", this.Plan) + `,`,
+		`StoreChunks:` + strings.Replace(fmt.Sprintf("%v", this.StoreChunks), "ChunkRefGroup", "logproto.ChunkRefGroup", 1) + `,`,
+		`CachingOptions:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.CachingOptions), "CachingOptions", "resultscache.CachingOptions", 1), `&`, ``, 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *Plan) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&Plan{`,
+		`Raw:` + fmt.Sprintf("%v", this.Raw) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -2341,6 +5829,7 @@ func (this *LokiResponse) String() string {
 		`Version:` + fmt.Sprintf("%v", this.Version) + `,`,
 		`Statistics:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.Statistics), "Result", "stats.Result", 1), `&`, ``, 1) + `,`,
 		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`Warnings:` + fmt.Sprintf("%v", this.Warnings) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -2374,18 +5863,6 @@ func (this *LokiSeriesResponse) String() string {
 		`Version:` + fmt.Sprintf("%v", this.Version) + `,`,
 		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
 		`Statistics:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.Statistics), "Result", "stats.Result", 1), `&`, ``, 1) + `,`,
-		`}`,
-	}, "")
-	return s
-}
-func (this *LokiLabelNamesRequest) String() string {
-	if this == nil {
-		return "nil"
-	}
-	s := strings.Join([]string{`&LokiLabelNamesRequest{`,
-		`StartTs:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.StartTs), "Timestamp", "types.Timestamp", 1), `&`, ``, 1) + `,`,
-		`EndTs:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.EndTs), "Timestamp", "types.Timestamp", 1), `&`, ``, 1) + `,`,
-		`Path:` + fmt.Sprintf("%v", this.Path) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -2433,6 +5910,339 @@ func (this *IndexStatsResponse) String() string {
 	s := strings.Join([]string{`&IndexStatsResponse{`,
 		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
 		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *VolumeResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&VolumeResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *TopKSketchesResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&TopKSketchesResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`Warnings:` + fmt.Sprintf("%v", this.Warnings) + `,`,
+		`Statistics:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.Statistics), "Result", "stats.Result", 1), `&`, ``, 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QuantileSketchResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QuantileSketchResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`Warnings:` + fmt.Sprintf("%v", this.Warnings) + `,`,
+		`Statistics:` + strings.Replace(strings.Replace(fmt.Sprintf("%v", this.Statistics), "Result", "stats.Result", 1), `&`, ``, 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *ShardsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&ShardsResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *DetectedFieldsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&DetectedFieldsResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryPatternsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryPatternsResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *DetectedLabelsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&DetectedLabelsResponse{`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`Headers:` + fmt.Sprintf("%v", this.Headers) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse{`,
+		`Status:` + strings.Replace(fmt.Sprintf("%v", this.Status), "Status", "rpc.Status", 1) + `,`,
+		`Response:` + fmt.Sprintf("%v", this.Response) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Series) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Series{`,
+		`Series:` + strings.Replace(fmt.Sprintf("%v", this.Series), "LokiSeriesResponse", "LokiSeriesResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Labels) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Labels{`,
+		`Labels:` + strings.Replace(fmt.Sprintf("%v", this.Labels), "LokiLabelNamesResponse", "LokiLabelNamesResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Stats) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Stats{`,
+		`Stats:` + strings.Replace(fmt.Sprintf("%v", this.Stats), "IndexStatsResponse", "IndexStatsResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Prom) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Prom{`,
+		`Prom:` + strings.Replace(fmt.Sprintf("%v", this.Prom), "LokiPromResponse", "LokiPromResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Streams) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Streams{`,
+		`Streams:` + strings.Replace(fmt.Sprintf("%v", this.Streams), "LokiResponse", "LokiResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_Volume) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_Volume{`,
+		`Volume:` + strings.Replace(fmt.Sprintf("%v", this.Volume), "VolumeResponse", "VolumeResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_TopkSketches) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_TopkSketches{`,
+		`TopkSketches:` + strings.Replace(fmt.Sprintf("%v", this.TopkSketches), "TopKSketchesResponse", "TopKSketchesResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_QuantileSketches) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_QuantileSketches{`,
+		`QuantileSketches:` + strings.Replace(fmt.Sprintf("%v", this.QuantileSketches), "QuantileSketchResponse", "QuantileSketchResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_ShardsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_ShardsResponse{`,
+		`ShardsResponse:` + strings.Replace(fmt.Sprintf("%v", this.ShardsResponse), "ShardsResponse", "ShardsResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_DetectedFields) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_DetectedFields{`,
+		`DetectedFields:` + strings.Replace(fmt.Sprintf("%v", this.DetectedFields), "DetectedFieldsResponse", "DetectedFieldsResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_PatternsResponse) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_PatternsResponse{`,
+		`PatternsResponse:` + strings.Replace(fmt.Sprintf("%v", this.PatternsResponse), "QueryPatternsResponse", "QueryPatternsResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryResponse_DetectedLabels) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryResponse_DetectedLabels{`,
+		`DetectedLabels:` + strings.Replace(fmt.Sprintf("%v", this.DetectedLabels), "DetectedLabelsResponse", "DetectedLabelsResponse", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest) String() string {
+	if this == nil {
+		return "nil"
+	}
+	keysForMetadata := make([]string, 0, len(this.Metadata))
+	for k, _ := range this.Metadata {
+		keysForMetadata = append(keysForMetadata, k)
+	}
+	github_com_gogo_protobuf_sortkeys.Strings(keysForMetadata)
+	mapStringForMetadata := "map[string]string{"
+	for _, k := range keysForMetadata {
+		mapStringForMetadata += fmt.Sprintf("%v: %v,", k, this.Metadata[k])
+	}
+	mapStringForMetadata += "}"
+	s := strings.Join([]string{`&QueryRequest{`,
+		`Request:` + fmt.Sprintf("%v", this.Request) + `,`,
+		`Metadata:` + mapStringForMetadata + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Series) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Series{`,
+		`Series:` + strings.Replace(fmt.Sprintf("%v", this.Series), "LokiSeriesRequest", "LokiSeriesRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Labels) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Labels{`,
+		`Labels:` + strings.Replace(fmt.Sprintf("%v", this.Labels), "LabelRequest", "logproto.LabelRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Stats) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Stats{`,
+		`Stats:` + strings.Replace(fmt.Sprintf("%v", this.Stats), "IndexStatsRequest", "logproto.IndexStatsRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Instant) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Instant{`,
+		`Instant:` + strings.Replace(fmt.Sprintf("%v", this.Instant), "LokiInstantRequest", "LokiInstantRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Streams) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Streams{`,
+		`Streams:` + strings.Replace(fmt.Sprintf("%v", this.Streams), "LokiRequest", "LokiRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_Volume) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_Volume{`,
+		`Volume:` + strings.Replace(fmt.Sprintf("%v", this.Volume), "VolumeRequest", "logproto.VolumeRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_ShardsRequest) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_ShardsRequest{`,
+		`ShardsRequest:` + strings.Replace(fmt.Sprintf("%v", this.ShardsRequest), "ShardsRequest", "logproto.ShardsRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_DetectedFields) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_DetectedFields{`,
+		`DetectedFields:` + strings.Replace(fmt.Sprintf("%v", this.DetectedFields), "DetectedFieldsRequest", "logproto.DetectedFieldsRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_PatternsRequest) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_PatternsRequest{`,
+		`PatternsRequest:` + strings.Replace(fmt.Sprintf("%v", this.PatternsRequest), "QueryPatternsRequest", "logproto.QueryPatternsRequest", 1) + `,`,
+		`}`,
+	}, "")
+	return s
+}
+func (this *QueryRequest_DetectedLabels) String() string {
+	if this == nil {
+		return "nil"
+	}
+	s := strings.Join([]string{`&QueryRequest_DetectedLabels{`,
+		`DetectedLabels:` + strings.Replace(fmt.Sprintf("%v", this.DetectedLabels), "DetectedLabelsRequest", "logproto.DetectedLabelsRequest", 1) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -2712,6 +6522,111 @@ func (m *LokiRequest) Unmarshal(dAtA []byte) error {
 					break
 				}
 			}
+		case 10:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Plan", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Plan == nil {
+				m.Plan = &github_com_grafana_loki_v3_pkg_querier_plan.QueryPlan{}
+			}
+			if err := m.Plan.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 11:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field StoreChunks", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.StoreChunks == nil {
+				m.StoreChunks = &logproto.ChunkRefGroup{}
+			}
+			if err := m.StoreChunks.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 12:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CachingOptions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if err := m.CachingOptions.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skipQueryrange(dAtA[iNdEx:])
@@ -2931,6 +6846,198 @@ func (m *LokiInstantRequest) Unmarshal(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			m.Shards = append(m.Shards, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Plan", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Plan == nil {
+				m.Plan = &github_com_grafana_loki_v3_pkg_querier_plan.QueryPlan{}
+			}
+			if err := m.Plan.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field StoreChunks", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.StoreChunks == nil {
+				m.StoreChunks = &logproto.ChunkRefGroup{}
+			}
+			if err := m.StoreChunks.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 9:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field CachingOptions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if err := m.CachingOptions.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *Plan) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: Plan: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: Plan: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Raw", wireType)
+			}
+			var byteLen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				byteLen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if byteLen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + byteLen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Raw = append(m.Raw[:0], dAtA[iNdEx:postIndex]...)
+			if m.Raw == nil {
+				m.Raw = []byte{}
+			}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -3233,10 +7340,42 @@ func (m *LokiResponse) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Headers = append(m.Headers, github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
 			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			iNdEx = postIndex
+		case 10:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Warnings", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Warnings = append(m.Warnings, string(dAtA[iNdEx:postIndex]))
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -3620,7 +7759,7 @@ func (m *LokiSeriesResponse) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Headers = append(m.Headers, github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
 			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -3657,157 +7796,6 @@ func (m *LokiSeriesResponse) Unmarshal(dAtA []byte) error {
 			if err := m.Statistics.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := skipQueryrange(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if skippy < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			if (iNdEx + skippy) < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *LokiLabelNamesRequest) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowQueryrange
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: LokiLabelNamesRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: LokiLabelNamesRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field StartTs", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowQueryrange
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if err := github_com_gogo_protobuf_types.StdTimeUnmarshal(&m.StartTs, dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 2:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field EndTs", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowQueryrange
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if err := github_com_gogo_protobuf_types.StdTimeUnmarshal(&m.EndTs, dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		case 3:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Path", wireType)
-			}
-			var stringLen uint64
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowQueryrange
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				stringLen |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			intStringLen := int(stringLen)
-			if intStringLen < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			postIndex := iNdEx + intStringLen
-			if postIndex < 0 {
-				return ErrInvalidLengthQueryrange
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.Path = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -3974,7 +7962,7 @@ func (m *LokiLabelNamesResponse) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Headers = append(m.Headers, github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
 			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -4336,7 +8324,7 @@ func (m *IndexStatsResponse) Unmarshal(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.Response == nil {
-				m.Response = &github_com_grafana_loki_pkg_logproto.IndexStatsResponse{}
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.IndexStatsResponse{}
 			}
 			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
@@ -4371,10 +8359,2040 @@ func (m *IndexStatsResponse) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Headers = append(m.Headers, github_com_grafana_loki_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
 			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *VolumeResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: VolumeResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: VolumeResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.VolumeResponse{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *TopKSketchesResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: TopKSketchesResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: TopKSketchesResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.TopKMatrix{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Warnings", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Warnings = append(m.Warnings, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Statistics", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if err := m.Statistics.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *QuantileSketchResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: QuantileSketchResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: QuantileSketchResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.QuantileSketchMatrix{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Warnings", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Warnings = append(m.Warnings, string(dAtA[iNdEx:postIndex]))
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Statistics", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if err := m.Statistics.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *ShardsResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: ShardsResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: ShardsResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.ShardsResponse{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *DetectedFieldsResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: DetectedFieldsResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: DetectedFieldsResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.DetectedFieldsResponse{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *QueryPatternsResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: QueryPatternsResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: QueryPatternsResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.QueryPatternsResponse{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *DetectedLabelsResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: DetectedLabelsResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: DetectedLabelsResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Response", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Response == nil {
+				m.Response = &github_com_grafana_loki_v3_pkg_logproto.DetectedLabelsResponse{}
+			}
+			if err := m.Response.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Headers", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Headers = append(m.Headers, github_com_grafana_loki_v3_pkg_querier_queryrange_queryrangebase_definitions.PrometheusResponseHeader{})
+			if err := m.Headers[len(m.Headers)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *QueryResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: QueryResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: QueryResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Status", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Status == nil {
+				m.Status = &rpc.Status{}
+			}
+			if err := m.Status.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Series", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiSeriesResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Series{v}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Labels", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiLabelNamesResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Labels{v}
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Stats", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &IndexStatsResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Stats{v}
+			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Prom", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiPromResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Prom{v}
+			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Streams", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Streams{v}
+			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Volume", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &VolumeResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_Volume{v}
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TopkSketches", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &TopKSketchesResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_TopkSketches{v}
+			iNdEx = postIndex
+		case 9:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field QuantileSketches", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &QuantileSketchResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_QuantileSketches{v}
+			iNdEx = postIndex
+		case 10:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ShardsResponse", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &ShardsResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_ShardsResponse{v}
+			iNdEx = postIndex
+		case 11:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DetectedFields", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &DetectedFieldsResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_DetectedFields{v}
+			iNdEx = postIndex
+		case 12:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PatternsResponse", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &QueryPatternsResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_PatternsResponse{v}
+			iNdEx = postIndex
+		case 13:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DetectedLabels", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &DetectedLabelsResponse{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Response = &QueryResponse_DetectedLabels{v}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipQueryrange(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if skippy < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *QueryRequest) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowQueryrange
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: QueryRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: QueryRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Series", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiSeriesRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Series{v}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Labels", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.LabelRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Labels{v}
+			iNdEx = postIndex
+		case 3:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Stats", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.IndexStatsRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Stats{v}
+			iNdEx = postIndex
+		case 4:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Instant", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiInstantRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Instant{v}
+			iNdEx = postIndex
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Streams", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &LokiRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Streams{v}
+			iNdEx = postIndex
+		case 6:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Volume", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.VolumeRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_Volume{v}
+			iNdEx = postIndex
+		case 7:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Metadata", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.Metadata == nil {
+				m.Metadata = make(map[string]string)
+			}
+			var mapkey string
+			var mapvalue string
+			for iNdEx < postIndex {
+				entryPreIndex := iNdEx
+				var wire uint64
+				for shift := uint(0); ; shift += 7 {
+					if shift >= 64 {
+						return ErrIntOverflowQueryrange
+					}
+					if iNdEx >= l {
+						return io.ErrUnexpectedEOF
+					}
+					b := dAtA[iNdEx]
+					iNdEx++
+					wire |= uint64(b&0x7F) << shift
+					if b < 0x80 {
+						break
+					}
+				}
+				fieldNum := int32(wire >> 3)
+				if fieldNum == 1 {
+					var stringLenmapkey uint64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflowQueryrange
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						stringLenmapkey |= uint64(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					intStringLenmapkey := int(stringLenmapkey)
+					if intStringLenmapkey < 0 {
+						return ErrInvalidLengthQueryrange
+					}
+					postStringIndexmapkey := iNdEx + intStringLenmapkey
+					if postStringIndexmapkey < 0 {
+						return ErrInvalidLengthQueryrange
+					}
+					if postStringIndexmapkey > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapkey = string(dAtA[iNdEx:postStringIndexmapkey])
+					iNdEx = postStringIndexmapkey
+				} else if fieldNum == 2 {
+					var stringLenmapvalue uint64
+					for shift := uint(0); ; shift += 7 {
+						if shift >= 64 {
+							return ErrIntOverflowQueryrange
+						}
+						if iNdEx >= l {
+							return io.ErrUnexpectedEOF
+						}
+						b := dAtA[iNdEx]
+						iNdEx++
+						stringLenmapvalue |= uint64(b&0x7F) << shift
+						if b < 0x80 {
+							break
+						}
+					}
+					intStringLenmapvalue := int(stringLenmapvalue)
+					if intStringLenmapvalue < 0 {
+						return ErrInvalidLengthQueryrange
+					}
+					postStringIndexmapvalue := iNdEx + intStringLenmapvalue
+					if postStringIndexmapvalue < 0 {
+						return ErrInvalidLengthQueryrange
+					}
+					if postStringIndexmapvalue > l {
+						return io.ErrUnexpectedEOF
+					}
+					mapvalue = string(dAtA[iNdEx:postStringIndexmapvalue])
+					iNdEx = postStringIndexmapvalue
+				} else {
+					iNdEx = entryPreIndex
+					skippy, err := skipQueryrange(dAtA[iNdEx:])
+					if err != nil {
+						return err
+					}
+					if skippy < 0 {
+						return ErrInvalidLengthQueryrange
+					}
+					if (iNdEx + skippy) > postIndex {
+						return io.ErrUnexpectedEOF
+					}
+					iNdEx += skippy
+				}
+			}
+			m.Metadata[mapkey] = mapvalue
+			iNdEx = postIndex
+		case 8:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ShardsRequest", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.ShardsRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_ShardsRequest{v}
+			iNdEx = postIndex
+		case 9:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DetectedFields", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.DetectedFieldsRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_DetectedFields{v}
+			iNdEx = postIndex
+		case 10:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field PatternsRequest", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.QueryPatternsRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_PatternsRequest{v}
+			iNdEx = postIndex
+		case 11:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field DetectedLabels", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowQueryrange
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthQueryrange
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			v := &logproto.DetectedLabelsRequest{}
+			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			m.Request = &QueryRequest_DetectedLabels{v}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex

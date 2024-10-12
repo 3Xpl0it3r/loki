@@ -14,13 +14,13 @@ import (
 	"github.com/go-kit/log/level"
 	dstls "github.com/grafana/dskit/crypto/tls"
 	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/dskit/instrument"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/common/version"
-	"github.com/weaveworks/common/instrument"
 
-	"github.com/grafana/loki/pkg/configs/userconfig"
-	util_log "github.com/grafana/loki/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/configs/userconfig"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
 )
 
 var (
@@ -96,7 +96,7 @@ func (c ConfigDBClient) GetRules(ctx context.Context, since userconfig.ID) (map[
 	}
 	endpoint := fmt.Sprintf("%s/private/api/prom/configs/rules%s", c.URL.String(), suffix)
 	var response *ConfigsResponse
-	err := instrument.CollectedRequest(ctx, "GetRules", configsRequestDuration, instrument.ErrorCode, func(ctx context.Context) error {
+	err := instrument.CollectedRequest(ctx, "GetRules", configsRequestDuration, instrument.ErrorCode, func(_ context.Context) error {
 		var err error
 		response, err = doRequest(endpoint, c.Timeout, c.TLSConfig, since)
 		return err
@@ -122,7 +122,7 @@ func (c ConfigDBClient) GetAlerts(ctx context.Context, since userconfig.ID) (*Co
 	}
 	endpoint := fmt.Sprintf("%s/private/api/prom/configs/alertmanager%s", c.URL.String(), suffix)
 	var response *ConfigsResponse
-	err := instrument.CollectedRequest(ctx, "GetAlerts", configsRequestDuration, instrument.ErrorCode, func(ctx context.Context) error {
+	err := instrument.CollectedRequest(ctx, "GetAlerts", configsRequestDuration, instrument.ErrorCode, func(_ context.Context) error {
 		var err error
 		response, err = doRequest(endpoint, c.Timeout, c.TLSConfig, since)
 		return err

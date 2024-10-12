@@ -6,6 +6,8 @@ import (
 	"net/http"
 
 	"github.com/prometheus/common/model"
+
+	"github.com/grafana/loki/v3/pkg/util/flagext"
 )
 
 // Context key type used to avoid collisions
@@ -20,10 +22,14 @@ const (
 // NOTE: we use custom `model.Duration` instead of standard `time.Duration` because,
 // to support user-friendly duration format (e.g: "1h30m45s") in JSON value.
 type QueryLimits struct {
-	MaxQueryLength          model.Duration `json:"maxQueryLength,omitempty"`
-	MaxQueryLookback        model.Duration `json:"maxQueryLookback,omitempty"`
-	MaxEntriesLimitPerQuery int            `json:"maxEntriesLimitPerQuery,omitempty"`
-	QueryTimeout            model.Duration `json:"queryTimeout,omitempty"`
+	MaxQueryLength          model.Duration   `json:"maxQueryLength,omitempty"`
+	MaxQueryRange           model.Duration   `json:"maxQueryInterval,omitempty"`
+	MaxQueryLookback        model.Duration   `json:"maxQueryLookback,omitempty"`
+	MaxEntriesLimitPerQuery int              `json:"maxEntriesLimitPerQuery,omitempty"`
+	QueryTimeout            model.Duration   `json:"maxQueryTime,omitempty"`
+	RequiredLabels          []string         `json:"requiredLabels,omitempty"`
+	RequiredNumberLabels    int              `json:"minimumLabelsNumber,omitempty"`
+	MaxQueryBytesRead       flagext.ByteSize `json:"maxQueryBytesRead,omitempty"`
 }
 
 func UnmarshalQueryLimits(data []byte) (*QueryLimits, error) {
@@ -38,14 +44,19 @@ func MarshalQueryLimits(limits *QueryLimits) ([]byte, error) {
 
 // InjectQueryLimitsHTTP adds the query limits to the request headers.
 func InjectQueryLimitsHTTP(r *http.Request, limits *QueryLimits) error {
+	return InjectQueryLimitsHeader(&r.Header, limits)
+}
+
+// InjectQueryLimitsHeader adds the query limits to the headers.
+func InjectQueryLimitsHeader(h *http.Header, limits *QueryLimits) error {
 	// Ensure any existing policy sets are erased
-	r.Header.Del(HTTPHeaderQueryLimitsKey)
+	h.Del(HTTPHeaderQueryLimitsKey)
 
 	encodedLimits, err := MarshalQueryLimits(limits)
 	if err != nil {
 		return err
 	}
-	r.Header.Add(HTTPHeaderQueryLimitsKey, string(encodedLimits))
+	h.Add(HTTPHeaderQueryLimitsKey, string(encodedLimits))
 	return nil
 }
 

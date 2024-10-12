@@ -14,31 +14,38 @@ import (
 
 	"github.com/go-kit/log"
 	"github.com/grafana/dskit/flagext"
+	"github.com/grafana/dskit/httpgrpc"
 	"github.com/grafana/dskit/kv"
 	"github.com/grafana/dskit/kv/consul"
 	"github.com/grafana/dskit/ring"
 	ring_client "github.com/grafana/dskit/ring/client"
 	"github.com/grafana/dskit/services"
+	"github.com/grafana/dskit/user"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/prometheus/model/labels"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/weaveworks/common/httpgrpc"
-	"github.com/weaveworks/common/user"
+	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 
-	"github.com/grafana/loki/pkg/ingester"
-	"github.com/grafana/loki/pkg/ingester/client"
-	"github.com/grafana/loki/pkg/logproto"
-	"github.com/grafana/loki/pkg/logql/syntax"
-	"github.com/grafana/loki/pkg/runtime"
-	fe "github.com/grafana/loki/pkg/util/flagext"
-	loki_flagext "github.com/grafana/loki/pkg/util/flagext"
-	util_log "github.com/grafana/loki/pkg/util/log"
-	loki_net "github.com/grafana/loki/pkg/util/net"
-	"github.com/grafana/loki/pkg/util/test"
-	"github.com/grafana/loki/pkg/validation"
+	"github.com/grafana/loki/pkg/push"
+
+	"github.com/grafana/loki/v3/pkg/ingester"
+	"github.com/grafana/loki/v3/pkg/ingester/client"
+	loghttp_push "github.com/grafana/loki/v3/pkg/loghttp/push"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/runtime"
+	"github.com/grafana/loki/v3/pkg/util/constants"
+	fe "github.com/grafana/loki/v3/pkg/util/flagext"
+	loki_flagext "github.com/grafana/loki/v3/pkg/util/flagext"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	loki_net "github.com/grafana/loki/v3/pkg/util/net"
+	"github.com/grafana/loki/v3/pkg/util/test"
+	"github.com/grafana/loki/v3/pkg/validation"
 )
 
 var (
@@ -52,50 +59,80 @@ func TestDistributor(t *testing.T) {
 	for i, tc := range []struct {
 		lines            int
 		maxLineSize      uint64
-		mangleLabels     bool
+		streams          int
+		mangleLabels     int
 		expectedResponse *logproto.PushResponse
-		expectedError    error
+		expectedErrors   []error
 	}{
 		{
 			lines:            10,
+			streams:          1,
 			expectedResponse: success,
 		},
 		{
-			lines:         100,
-			expectedError: httpgrpc.Errorf(http.StatusTooManyRequests, validation.RateLimitedErrorMsg, "test", 100, 100, 1000),
+			lines:          100,
+			streams:        1,
+			expectedErrors: []error{httpgrpc.Errorf(http.StatusTooManyRequests, validation.RateLimitedErrorMsg, "test", 100, 100, 1000)},
 		},
 		{
 			lines:            100,
+			streams:          1,
 			maxLineSize:      1,
 			expectedResponse: success,
-			expectedError:    httpgrpc.Errorf(http.StatusBadRequest, validation.LineTooLongErrorMsg, 1, "{foo=\"bar\"}", 10),
+			expectedErrors:   []error{httpgrpc.Errorf(http.StatusBadRequest, "100 errors like: %s", fmt.Sprintf(validation.LineTooLongErrorMsg, 1, "{foo=\"bar\"}", 10))},
 		},
 		{
 			lines:            100,
-			mangleLabels:     true,
+			streams:          1,
+			mangleLabels:     1,
 			expectedResponse: success,
-			expectedError:    httpgrpc.Errorf(http.StatusBadRequest, validation.InvalidLabelsErrorMsg, "{ab\"", "1:4: parse error: unterminated quoted string"),
+			expectedErrors:   []error{httpgrpc.Errorf(http.StatusBadRequest, validation.InvalidLabelsErrorMsg, "{ab\"", "1:4: parse error: unterminated quoted string")},
+		},
+		{
+			lines:            10,
+			streams:          2,
+			mangleLabels:     1,
+			maxLineSize:      1,
+			expectedResponse: success,
+			expectedErrors: []error{
+				httpgrpc.Errorf(http.StatusBadRequest, ""),
+				fmt.Errorf("1 errors like: %s", fmt.Sprintf(validation.InvalidLabelsErrorMsg, "{ab\"", "1:4: parse error: unterminated quoted string")),
+				fmt.Errorf("10 errors like: %s", fmt.Sprintf(validation.LineTooLongErrorMsg, 1, "{foo=\"bar\"}", 10)),
+			},
 		},
 	} {
 		t.Run(fmt.Sprintf("[%d](lines=%v)", i, tc.lines), func(t *testing.T) {
 			limits := &validation.Limits{}
 			flagext.DefaultValues(limits)
-			limits.EnforceMetricName = false
 			limits.IngestionRateMB = ingestionRateLimit
 			limits.IngestionBurstSizeMB = ingestionRateLimit
 			limits.MaxLineSize = fe.ByteSize(tc.maxLineSize)
 
 			distributors, _ := prepare(t, 1, 5, limits, nil)
 
-			request := makeWriteRequest(tc.lines, 10)
-
-			if tc.mangleLabels {
-				request.Streams[0].Labels = `{ab"`
+			var request logproto.PushRequest
+			for i := 0; i < tc.streams; i++ {
+				req := makeWriteRequest(tc.lines, 10)
+				request.Streams = append(request.Streams, req.Streams[0])
 			}
 
-			response, err := distributors[i%len(distributors)].Push(ctx, request)
+			for i := 0; i < tc.mangleLabels; i++ {
+				request.Streams[i].Labels = `{ab"`
+			}
+
+			response, err := distributors[i%len(distributors)].Push(ctx, &request)
 			assert.Equal(t, tc.expectedResponse, response)
-			assert.Equal(t, tc.expectedError, err)
+			if len(tc.expectedErrors) > 0 {
+				for _, expectedError := range tc.expectedErrors {
+					if len(tc.expectedErrors) == 1 {
+						assert.Equal(t, expectedError, err)
+					} else {
+						assert.Contains(t, err.Error(), expectedError.Error())
+					}
+				}
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
@@ -104,11 +141,17 @@ func Test_IncrementTimestamp(t *testing.T) {
 	incrementingDisabled := &validation.Limits{}
 	flagext.DefaultValues(incrementingDisabled)
 	incrementingDisabled.RejectOldSamples = false
+	incrementingDisabled.DiscoverLogLevels = false
 
 	incrementingEnabled := &validation.Limits{}
 	flagext.DefaultValues(incrementingEnabled)
 	incrementingEnabled.RejectOldSamples = false
 	incrementingEnabled.IncrementDuplicateTimestamp = true
+	incrementingEnabled.DiscoverLogLevels = false
+
+	defaultLimits := &validation.Limits{}
+	flagext.DefaultValues(defaultLimits)
+	defaultLimits.DiscoverLogLevels = false
 
 	tests := map[string]struct {
 		limits       *validation.Limits
@@ -327,17 +370,44 @@ func Test_IncrementTimestamp(t *testing.T) {
 				},
 			},
 		},
+		"incrementing enabled, no dupes, out of order": {
+			limits: incrementingEnabled,
+			push: &logproto.PushRequest{
+				Streams: []logproto.Stream{
+					{
+						Labels: "{job=\"foo\"}",
+						Entries: []logproto.Entry{
+							{Timestamp: time.Unix(123456, 0), Line: "hey1"},
+							{Timestamp: time.Unix(123458, 0), Line: "hey3"},
+							{Timestamp: time.Unix(123457, 0), Line: "hey2"},
+						},
+					},
+				},
+			},
+			expectedPush: &logproto.PushRequest{
+				Streams: []logproto.Stream{
+					{
+						Labels: "{job=\"foo\"}",
+						Hash:   0x8eeb87f5eb220480,
+						Entries: []logproto.Entry{
+							{Timestamp: time.Unix(123456, 0), Line: "hey1"},
+							{Timestamp: time.Unix(123458, 0), Line: "hey3"},
+							{Timestamp: time.Unix(123457, 0), Line: "hey2"},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for testName, testData := range tests {
-		testData := testData
-
 		t.Run(testName, func(t *testing.T) {
 			ing := &mockIngester{}
-			distributors, _ := prepare(t, 1, 3, testData.limits, func(addr string) (ring_client.PoolClient, error) { return ing, nil })
+			distributors, _ := prepare(t, 1, 3, testData.limits, func(_ string) (ring_client.PoolClient, error) { return ing, nil })
 			_, err := distributors[0].Push(ctx, testData.push)
 			assert.NoError(t, err)
-			assert.Equal(t, testData.expectedPush, ing.pushed[0])
+			topVal := ing.Peek()
+			assert.Equal(t, testData.expectedPush, topVal)
 		})
 	}
 }
@@ -374,6 +444,8 @@ func TestDistributorPushConcurrently(t *testing.T) {
 	labels := make(map[string]int)
 
 	for i := range ingesters {
+		ingesters[i].mu.Lock()
+
 		pushed := ingesters[i].pushed
 		counter = counter + len(pushed)
 		for _, pr := range pushed {
@@ -381,6 +453,7 @@ func TestDistributorPushConcurrently(t *testing.T) {
 				labels[st.Labels] = labels[st.Labels] + 1
 			}
 		}
+		ingesters[i].mu.Unlock()
 	}
 	assert.Equal(t, numReq*3, counter) // RF=3
 	// each stream is present 3 times
@@ -431,18 +504,90 @@ func TestDistributorPushErrors(t *testing.T) {
 	})
 }
 
-func Test_SortLabelsOnPush(t *testing.T) {
+func TestDistributorPushToKafka(t *testing.T) {
 	limits := &validation.Limits{}
 	flagext.DefaultValues(limits)
-	limits.EnforceMetricName = false
-	ingester := &mockIngester{}
-	distributors, _ := prepare(t, 1, 5, limits, func(addr string) (ring_client.PoolClient, error) { return ingester, nil })
 
-	request := makeWriteRequest(10, 10)
-	request.Streams[0].Labels = `{buzz="f", a="b"}`
-	_, err := distributors[0].Push(ctx, request)
-	require.NoError(t, err)
-	require.Equal(t, `{a="b", buzz="f"}`, ingester.pushed[0].Streams[0].Labels)
+	t.Run("with kafka, any failure fails the request", func(t *testing.T) {
+		kafkaWriter := &mockKafkaWriter{
+			failOnWrite: true,
+		}
+		distributors, _ := prepare(t, 1, 0, limits, nil)
+		for _, d := range distributors {
+			d.cfg.KafkaEnabled = true
+			d.cfg.IngesterEnabled = false
+			d.cfg.KafkaConfig.ProducerMaxRecordSizeBytes = 1000
+			d.kafkaWriter = kafkaWriter
+		}
+
+		request := makeWriteRequest(10, 64)
+		_, err := distributors[0].Push(ctx, request)
+		require.Error(t, err)
+	})
+
+	t.Run("with kafka, no failures is successful", func(t *testing.T) {
+		kafkaWriter := &mockKafkaWriter{
+			failOnWrite: false,
+		}
+		distributors, _ := prepare(t, 1, 0, limits, nil)
+		for _, d := range distributors {
+			d.cfg.KafkaEnabled = true
+			d.cfg.IngesterEnabled = false
+			d.cfg.KafkaConfig.ProducerMaxRecordSizeBytes = 1000
+			d.kafkaWriter = kafkaWriter
+		}
+
+		request := makeWriteRequest(10, 64)
+		_, err := distributors[0].Push(ctx, request)
+		require.NoError(t, err)
+
+		require.Equal(t, 1, kafkaWriter.pushed)
+	})
+
+	t.Run("with kafka and ingesters, both must complete", func(t *testing.T) {
+		kafkaWriter := &mockKafkaWriter{
+			failOnWrite: false,
+		}
+		distributors, ingesters := prepare(t, 1, 3, limits, nil)
+		ingesters[0].succeedAfter = 5 * time.Millisecond
+		ingesters[1].succeedAfter = 10 * time.Millisecond
+		ingesters[2].succeedAfter = 15 * time.Millisecond
+
+		for _, d := range distributors {
+			d.cfg.KafkaEnabled = true
+			d.cfg.IngesterEnabled = true
+			d.cfg.KafkaConfig.ProducerMaxRecordSizeBytes = 1000
+			d.kafkaWriter = kafkaWriter
+		}
+
+		request := makeWriteRequest(10, 64)
+		_, err := distributors[0].Push(ctx, request)
+		require.NoError(t, err)
+
+		require.Equal(t, 1, kafkaWriter.pushed)
+
+		require.Equal(t, 1, len(ingesters[0].pushed))
+		require.Equal(t, 1, len(ingesters[1].pushed))
+		require.Eventually(t, func() bool {
+			return len(ingesters[2].pushed) == 1
+		}, time.Second, 10*time.Millisecond)
+	})
+}
+
+func Test_SortLabelsOnPush(t *testing.T) {
+	t.Run("with service_name already present in labels", func(t *testing.T) {
+		limits := &validation.Limits{}
+		flagext.DefaultValues(limits)
+		ingester := &mockIngester{}
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		request := makeWriteRequest(10, 10)
+		request.Streams[0].Labels = `{buzz="f", service_name="foo", a="b"}`
+		_, err := distributors[0].Push(ctx, request)
+		require.NoError(t, err)
+		topVal := ingester.Peek()
+		require.Equal(t, `{a="b", buzz="f", service_name="foo"}`, topVal.Streams[0].Labels)
+	})
 }
 
 func Test_TruncateLogLines(t *testing.T) {
@@ -450,7 +595,6 @@ func Test_TruncateLogLines(t *testing.T) {
 		limits := &validation.Limits{}
 		flagext.DefaultValues(limits)
 
-		limits.EnforceMetricName = false
 		limits.MaxLineSize = 5
 		limits.MaxLineSizeTruncate = true
 		return limits, &mockIngester{}
@@ -458,11 +602,32 @@ func Test_TruncateLogLines(t *testing.T) {
 
 	t.Run("it truncates lines to MaxLineSize when MaxLineSizeTruncate is true", func(t *testing.T) {
 		limits, ingester := setup()
-		distributors, _ := prepare(t, 1, 5, limits, func(addr string) (ring_client.PoolClient, error) { return ingester, nil })
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
 
 		_, err := distributors[0].Push(ctx, makeWriteRequest(1, 10))
 		require.NoError(t, err)
-		require.Len(t, ingester.pushed[0].Streams[0].Entries[0].Line, 5)
+		topVal := ingester.Peek()
+		require.Len(t, topVal.Streams[0].Entries[0].Line, 5)
+	})
+}
+
+func Test_DiscardEmptyStreamsAfterValidation(t *testing.T) {
+	setup := func() (*validation.Limits, *mockIngester) {
+		limits := &validation.Limits{}
+		flagext.DefaultValues(limits)
+
+		limits.MaxLineSize = 5
+		return limits, &mockIngester{}
+	}
+
+	t.Run("it discards invalid entries and discards resulting empty streams completely", func(t *testing.T) {
+		limits, ingester := setup()
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		_, err := distributors[0].Push(ctx, makeWriteRequest(1, 10))
+		require.Equal(t, err, httpgrpc.Errorf(http.StatusBadRequest, "%s", fmt.Sprintf(validation.LineTooLongErrorMsg, 5, "{foo=\"bar\"}", 10)))
+		topVal := ingester.Peek()
+		require.Nil(t, topVal)
 	})
 }
 
@@ -549,26 +714,26 @@ func TestStreamShard(t *testing.T) {
 			overrides, err := validation.NewOverrides(*distributorLimits, nil)
 			require.NoError(t, err)
 
-			validator, err := NewValidator(overrides)
+			validator, err := NewValidator(overrides, nil)
 			require.NoError(t, err)
 
 			d := Distributor{
-				rateStore:        &fakeRateStore{},
+				rateStore:        &fakeRateStore{pushRate: 1},
 				validator:        validator,
 				streamShardCount: prometheus.NewCounter(prometheus.CounterOpts{}),
 				shardTracker:     NewShardTracker(),
 			}
 
-			_, derivedStreams := d.shardStream(baseStream, tc.streamSize, "fake")
+			derivedStreams := d.shardStream(baseStream, tc.streamSize, "fake")
 			require.Len(t, derivedStreams, tc.wantDerivedStreamSize)
 
 			for _, s := range derivedStreams {
 				// Generate sorted labels
-				lbls, err := syntax.ParseLabels(s.stream.Labels)
+				lbls, err := syntax.ParseLabels(s.Stream.Labels)
 				require.NoError(t, err)
 
-				require.Equal(t, lbls.Hash(), s.stream.Hash)
-				require.Equal(t, lbls.String(), s.stream.Labels)
+				require.Equal(t, lbls.Hash(), s.Stream.Hash)
+				require.Equal(t, lbls.String(), s.Stream.Labels)
 			}
 		})
 	}
@@ -593,34 +758,34 @@ func TestStreamShardAcrossCalls(t *testing.T) {
 	overrides, err := validation.NewOverrides(*distributorLimits, nil)
 	require.NoError(t, err)
 
-	validator, err := NewValidator(overrides)
+	validator, err := NewValidator(overrides, nil)
 	require.NoError(t, err)
 
 	t.Run("it generates 4 shards across 2 calls when calculated shards = 2 * entries per call", func(t *testing.T) {
 		d := Distributor{
-			rateStore:        &fakeRateStore{},
+			rateStore:        &fakeRateStore{pushRate: 1},
 			validator:        validator,
 			streamShardCount: prometheus.NewCounter(prometheus.CounterOpts{}),
 			shardTracker:     NewShardTracker(),
 		}
 
-		_, derivedStreams := d.shardStream(baseStream, streamRate, "fake")
+		derivedStreams := d.shardStream(baseStream, streamRate, "fake")
 		require.Len(t, derivedStreams, 2)
 
 		for i, s := range derivedStreams {
-			require.Len(t, s.stream.Entries, 1)
-			lbls, err := syntax.ParseLabels(s.stream.Labels)
+			require.Len(t, s.Stream.Entries, 1)
+			lbls, err := syntax.ParseLabels(s.Stream.Labels)
 			require.NoError(t, err)
 
 			require.Equal(t, lbls[0].Value, fmt.Sprint(i))
 		}
 
-		_, derivedStreams = d.shardStream(baseStream, streamRate, "fake")
+		derivedStreams = d.shardStream(baseStream, streamRate, "fake")
 		require.Len(t, derivedStreams, 2)
 
 		for i, s := range derivedStreams {
-			require.Len(t, s.stream.Entries, 1)
-			lbls, err := syntax.ParseLabels(s.stream.Labels)
+			require.Len(t, s.Stream.Entries, 1)
+			lbls, err := syntax.ParseLabels(s.Stream.Labels)
 			require.NoError(t, err)
 
 			require.Equal(t, lbls[0].Value, fmt.Sprint(i+2))
@@ -658,7 +823,7 @@ func BenchmarkShardStream(b *testing.B) {
 	overrides, err := validation.NewOverrides(*distributorLimits, nil)
 	require.NoError(b, err)
 
-	validator, err := NewValidator(overrides)
+	validator, err := NewValidator(overrides, nil)
 	require.NoError(b, err)
 
 	distributorBuilder := func(shards int) *Distributor {
@@ -690,7 +855,6 @@ func BenchmarkShardStream(b *testing.B) {
 		b.ResetTimer()
 		for n := 0; n < b.N; n++ {
 			d.shardStream(stream, 0, "fake") //nolint:errcheck
-
 		}
 	})
 
@@ -718,7 +882,6 @@ func BenchmarkShardStream(b *testing.B) {
 func Benchmark_SortLabelsOnPush(b *testing.B) {
 	limits := &validation.Limits{}
 	flagext.DefaultValues(limits)
-	limits.EnforceMetricName = false
 	distributors, _ := prepare(&testing.T{}, 1, 5, limits, nil)
 	d := distributors[0]
 	request := makeWriteRequest(10, 10)
@@ -726,10 +889,64 @@ func Benchmark_SortLabelsOnPush(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		stream := request.Streams[0]
 		stream.Labels = `{buzz="f", a="b"}`
-		_, _, err := d.parseStreamLabels(vCtx, stream.Labels, &stream)
+		_, _, _, err := d.parseStreamLabels(vCtx, stream.Labels, stream)
 		if err != nil {
 			panic("parseStreamLabels fail,err:" + err.Error())
 		}
+	}
+}
+
+func TestParseStreamLabels(t *testing.T) {
+	defaultLimit := &validation.Limits{}
+	flagext.DefaultValues(defaultLimit)
+
+	for _, tc := range []struct {
+		name           string
+		origLabels     string
+		expectedLabels labels.Labels
+		expectedErr    error
+		generateLimits func() *validation.Limits
+	}{
+		{
+			name:       "service name label should not get counted against max labels count",
+			origLabels: `{foo="bar", service_name="unknown_service"}`,
+			generateLimits: func() *validation.Limits {
+				limits := &validation.Limits{}
+				flagext.DefaultValues(limits)
+				limits.MaxLabelNamesPerSeries = 1
+				return limits
+			},
+			expectedLabels: labels.Labels{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+				{
+					Name:  loghttp_push.LabelServiceName,
+					Value: loghttp_push.ServiceUnknown,
+				},
+			},
+		},
+	} {
+		limits := tc.generateLimits()
+		distributors, _ := prepare(&testing.T{}, 1, 5, limits, nil)
+		d := distributors[0]
+
+		vCtx := d.validator.getValidationContextForTime(testTime, "123")
+
+		t.Run(tc.name, func(t *testing.T) {
+			lbs, lbsString, hash, err := d.parseStreamLabels(vCtx, tc.origLabels, logproto.Stream{
+				Labels: tc.origLabels,
+			})
+			if tc.expectedErr != nil {
+				require.Equal(t, tc.expectedErr, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.expectedLabels.String(), lbsString)
+			require.Equal(t, tc.expectedLabels, lbs)
+			require.Equal(t, tc.expectedLabels.Hash(), hash)
+		})
 	}
 }
 
@@ -739,7 +956,6 @@ func Benchmark_Push(b *testing.B) {
 	limits.IngestionBurstSizeMB = math.MaxInt32
 	limits.CardinalityLimit = math.MaxInt32
 	limits.IngestionRateMB = math.MaxInt32
-	limits.EnforceMetricName = false
 	limits.MaxLineSize = math.MaxInt32
 	limits.RejectOldSamples = true
 	limits.RejectOldSamplesMaxAge = model.Duration(24 * time.Hour)
@@ -806,82 +1022,118 @@ func TestShardCountFor(t *testing.T) {
 		name        string
 		stream      *logproto.Stream
 		rate        int64
+		pushRate    float64
 		desiredRate loki_flagext.ByteSize
 
-		wantStreamSize int // used for sanity check.
-		wantShards     int
-		wantErr        bool
+		pushSize   int // used for sanity check.
+		wantShards int
+		wantErr    bool
 	}{
 		{
-			name:           "2 entries with zero rate and desired rate == 0, return 1 shard",
-			stream:         &logproto.Stream{Hash: 1},
-			rate:           0,
-			desiredRate:    0, // in bytes
-			wantStreamSize: 2, // in bytes
-			wantShards:     1,
-			wantErr:        false,
+			name:        "2 entries with zero rate and desired rate == 0, return 1 shard",
+			stream:      &logproto.Stream{Hash: 1},
+			rate:        0,
+			desiredRate: 0, // in bytes
+			pushSize:    2, // in bytes
+			pushRate:    1,
+			wantShards:  1,
+			wantErr:     false,
 		},
 		{
 			// although in this scenario we have enough size to be sharded, we can't divide the number of entries between the ingesters
 			// because the number of entries is lower than the number of shards.
-			name:           "not enough entries to be sharded, stream size (2b) + ingested rate (0b) < 3b = 1 shard but 0 entries",
-			stream:         &logproto.Stream{Hash: 1, Entries: []logproto.Entry{{Line: "abcde"}}},
-			rate:           0,
-			desiredRate:    3, // in bytes
-			wantStreamSize: 2, // in bytes
-			wantShards:     1,
-			wantErr:        true,
+			name:        "not enough entries to be sharded, stream size (2b) + ingested rate (0b) < 3b = 1 shard but 0 entries",
+			stream:      &logproto.Stream{Hash: 1, Entries: []logproto.Entry{{Line: "abcde"}}},
+			rate:        0,
+			desiredRate: 3, // in bytes
+			pushSize:    2, // in bytes
+			pushRate:    1,
+			wantShards:  1,
+			wantErr:     true,
 		},
 		{
-			name:           "not enough data to be sharded, stream size (18b) + ingested rate (0b) < 20b",
-			stream:         &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}}},
-			rate:           0,
-			desiredRate:    20, // in bytes
-			wantStreamSize: 18, // in bytes
-			wantShards:     1,
-			wantErr:        false,
+			name:        "not enough data to be sharded, stream size (18b) + ingested rate (0b) < 20b",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}}},
+			rate:        0,
+			desiredRate: 20, // in bytes
+			pushSize:    18, // in bytes
+			pushRate:    1,
+			wantShards:  1,
+			wantErr:     false,
 		},
 		{
-			name:           "enough data to have two shards, stream size (36b) + ingested rate (24b) > 40b",
-			stream:         &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
-			rate:           24, // in bytes
-			desiredRate:    40, // in bytes
-			wantStreamSize: 36, // in bytes
-			wantShards:     2,
-			wantErr:        false,
+			name:        "enough data to have two shards, stream size (36b) + ingested rate (24b) > 40b",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
+			rate:        24, // in bytes
+			desiredRate: 40, // in bytes
+			pushSize:    36, // in bytes
+			pushRate:    1,
+			wantShards:  2,
+			wantErr:     false,
 		},
 		{
 			// although the ingested rate by an ingester is 0, the stream is big enough to be sharded.
-			name:           "enough data to have two shards, stream size (36b) + ingested rate (0b) > 22b",
-			stream:         &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
-			rate:           0,  // in bytes
-			desiredRate:    22, // in bytes
-			wantStreamSize: 36, // in bytes
-			wantShards:     2,
-			wantErr:        false,
+			name:        "enough data to have two shards, stream size (36b) + ingested rate (0b) > 22b",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
+			rate:        0,  // in bytes
+			desiredRate: 22, // in bytes
+			pushSize:    36, // in bytes
+			pushRate:    1,
+			wantShards:  2,
+			wantErr:     false,
 		},
 		{
-			name: "a lot of shards, stream size (1mb) + ingested rate (300mb) > 3mb",
+			name: "a lot of shards, stream size (90b) + ingested rate (300mb) > 3mb",
 			stream: &logproto.Stream{Entries: []logproto.Entry{
 				{Line: "a"}, {Line: "b"}, {Line: "c"}, {Line: "d"}, {Line: "e"},
 			}},
-			rate:           0,  // in bytes
-			desiredRate:    22, // in bytes
-			wantStreamSize: 90, // in bytes
-			wantShards:     5,
-			wantErr:        false,
+			rate:        0,  // in bytes
+			desiredRate: 22, // in bytes
+			pushSize:    90, // in bytes
+			pushRate:    1,
+			wantShards:  5,
+			wantErr:     false,
+		},
+		{
+			name:        "take push rate into account. Only generate two shards even though this push is quite large",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
+			rate:        24,        // in bytes
+			pushRate:    1.0 / 6.0, // one push every 6 seconds
+			desiredRate: 40,        // in bytes
+			pushSize:    200,       // in bytes
+			wantShards:  2,
+			wantErr:     false,
+		},
+		{
+			name:        "If the push rate is 0, it's the first push of this stream. Don't shard",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
+			rate:        24, // in bytes
+			pushRate:    0,
+			desiredRate: 40,  // in bytes
+			pushSize:    200, // in bytes
+			wantShards:  1,
+			wantErr:     false,
+		},
+		{
+			name:        "If the push rate is greater than 1, use the payload size",
+			stream:      &logproto.Stream{Entries: []logproto.Entry{{Line: "a"}, {Line: "b"}}},
+			rate:        24, // in bytes
+			pushRate:    3,
+			desiredRate: 40,  // in bytes
+			pushSize:    200, // in bytes
+			wantShards:  6,
+			wantErr:     false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			limits := &validation.Limits{}
 			flagext.DefaultValues(limits)
-			limits.EnforceMetricName = false
 			limits.ShardStreams.DesiredRate = tc.desiredRate
 
 			d := &Distributor{
-				rateStore: &fakeRateStore{tc.rate},
+				rateStore: &fakeRateStore{tc.rate, tc.pushRate},
 			}
-			got := d.shardCountFor(util_log.Logger, tc.stream, tc.wantStreamSize, "fake", limits.ShardStreams)
+			got := d.shardCountFor(util_log.Logger, tc.stream, tc.pushSize, "fake", limits.ShardStreams)
 			require.Equal(t, tc.wantShards, got)
 		})
 	}
@@ -962,12 +1214,9 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 	}
 
 	for testName, testData := range tests {
-		testData := testData
-
 		t.Run(testName, func(t *testing.T) {
 			limits := &validation.Limits{}
 			flagext.DefaultValues(limits)
-			limits.EnforceMetricName = false
 			limits.IngestionRateStrategy = testData.ingestionRateStrategy
 			limits.IngestionRateMB = testData.ingestionRateMB
 			limits.IngestionBurstSizeMB = testData.ingestionBurstSizeMB
@@ -984,6 +1233,60 @@ func TestDistributor_PushIngestionRateLimiter(t *testing.T) {
 					assert.Nil(t, response)
 					assert.Equal(t, push.expectedError, err)
 				}
+			}
+		})
+	}
+}
+
+func TestDistributor_PushIngestionBlocked(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		blockUntil         time.Time
+		blockStatusCode    int
+		expectError        bool
+		expectedStatusCode int
+	}{
+		{
+			name:               "not configured",
+			expectedStatusCode: http.StatusOK,
+		},
+		{
+			name:               "not blocked",
+			blockUntil:         time.Now().Add(-1 * time.Hour),
+			expectedStatusCode: http.StatusOK,
+		},
+		{
+			name:               "blocked",
+			blockUntil:         time.Now().Add(1 * time.Hour),
+			blockStatusCode:    456,
+			expectError:        true,
+			expectedStatusCode: 456,
+		},
+		{
+			name:               "blocked with status code 200",
+			blockUntil:         time.Now().Add(1 * time.Hour),
+			blockStatusCode:    http.StatusOK,
+			expectError:        false,
+			expectedStatusCode: http.StatusOK,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			limits := &validation.Limits{}
+			flagext.DefaultValues(limits)
+			limits.BlockIngestionUntil = flagext.Time(tc.blockUntil)
+			limits.BlockIngestionStatusCode = tc.blockStatusCode
+
+			distributors, _ := prepare(t, 1, 5, limits, nil)
+			request := makeWriteRequest(1, 1024)
+			response, err := distributors[0].Push(ctx, request)
+
+			if tc.expectError {
+				expectedErr := fmt.Sprintf(validation.BlockedIngestionErrorMsg, "test", tc.blockUntil.Format(time.RFC3339), tc.blockStatusCode)
+				require.ErrorContains(t, err, expectedErr)
+				require.Nil(t, response)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, success, response)
 			}
 		})
 	}
@@ -1034,9 +1337,26 @@ func prepare(t *testing.T, numDistributors, numIngesters int, limits *validation
 	require.NoError(t, err)
 	require.NoError(t, services.StartAndAwaitRunning(context.Background(), ingestersRing))
 
-	test.Poll(t, time.Second, numIngesters, func() interface{} {
-		return ingestersRing.InstancesCount()
+	partitionRing := ring.NewPartitionRing(ring.PartitionRingDesc{
+		Partitions: map[int32]ring.PartitionDesc{
+			1: {
+				Id:             1,
+				Tokens:         []uint32{1},
+				State:          ring.PartitionActive,
+				StateTimestamp: time.Now().Unix(),
+			},
+		},
+		Owners: map[string]ring.OwnerDesc{
+			"test": {
+				OwnedPartition:   1,
+				State:            ring.OwnerActive,
+				UpdatedTimestamp: time.Now().Unix(),
+			},
+		},
 	})
+	partitionRingReader := mockPartitionRingReader{
+		ring: partitionRing,
+	}
 
 	loopbackName, err := loki_net.LoopbackInterfaceName()
 	require.NoError(t, err)
@@ -1052,17 +1372,18 @@ func prepare(t *testing.T, numDistributors, numIngesters int, limits *validation
 		distributorConfig.DistributorRing.KVStore.Mock = kvStore
 		distributorConfig.DistributorRing.InstanceAddr = "127.0.0.1"
 		distributorConfig.DistributorRing.InstanceInterfaceNames = []string{loopbackName}
-		distributorConfig.factory = factory
-		if factory == nil {
-			distributorConfig.factory = func(addr string) (ring_client.PoolClient, error) {
+		factoryWrap := ring_client.PoolAddrFunc(factory)
+		distributorConfig.factory = factoryWrap
+		if factoryWrap == nil {
+			distributorConfig.factory = ring_client.PoolAddrFunc(func(addr string) (ring_client.PoolClient, error) {
 				return ingesterByAddr[addr], nil
-			}
+			})
 		}
 
 		overrides, err := validation.NewOverrides(*limits, nil)
 		require.NoError(t, err)
 
-		d, err := New(distributorConfig, clientConfig, runtime.DefaultTenantConfigs(), ingestersRing, overrides, prometheus.NewPedanticRegistry())
+		d, err := New(distributorConfig, clientConfig, runtime.DefaultTenantConfigs(), ingestersRing, partitionRingReader, overrides, prometheus.NewPedanticRegistry(), constants.Loki, nil, nil, log.NewNopLogger())
 		require.NoError(t, err)
 		require.NoError(t, services.StartAndAwaitRunning(context.Background(), d))
 		distributors[i] = d
@@ -1070,7 +1391,7 @@ func prepare(t *testing.T, numDistributors, numIngesters int, limits *validation
 
 	if distributors[0].distributorsLifecycler != nil {
 		test.Poll(t, time.Second, numDistributors, func() interface{} {
-			return distributors[0].distributorsLifecycler.HealthyInstancesCount()
+			return distributors[0].HealthyInstancesCount()
 		})
 	}
 
@@ -1083,6 +1404,29 @@ func prepare(t *testing.T, numDistributors, numIngesters int, limits *validation
 	})
 
 	return distributors, ingesters
+}
+
+func makeWriteRequestWithLabelsWithLevel(lines, size int, labels []string, level string) *logproto.PushRequest {
+	streams := make([]logproto.Stream, len(labels))
+	for i := 0; i < len(labels); i++ {
+		stream := logproto.Stream{Labels: labels[i]}
+
+		for j := 0; j < lines; j++ {
+			// Construct the log line, honoring the input size
+			line := "msg=an error occured " + strconv.Itoa(j) + strings.Repeat("0", size) + " severity=" + level
+
+			stream.Entries = append(stream.Entries, logproto.Entry{
+				Timestamp: time.Now().Add(time.Duration(j) * time.Millisecond),
+				Line:      line,
+			})
+		}
+
+		streams[i] = stream
+	}
+
+	return &logproto.PushRequest{
+		Streams: streams,
+	}
 }
 
 func makeWriteRequestWithLabels(lines, size int, labels []string) *logproto.PushRequest {
@@ -1113,6 +1457,37 @@ func makeWriteRequest(lines, size int) *logproto.PushRequest {
 	return makeWriteRequestWithLabels(lines, size, []string{`{foo="bar"}`})
 }
 
+type mockKafkaWriter struct {
+	failOnWrite bool
+	pushed      int
+}
+
+func (m *mockKafkaWriter) ProduceSync(_ context.Context, _ []*kgo.Record) kgo.ProduceResults {
+	if m.failOnWrite {
+		return kgo.ProduceResults{
+			{
+				Err: kgo.ErrRecordTimeout,
+			},
+		}
+	}
+	m.pushed++
+	return kgo.ProduceResults{
+		{
+			Err: nil,
+		},
+	}
+}
+
+func (m *mockKafkaWriter) Close() {}
+
+type mockPartitionRingReader struct {
+	ring *ring.PartitionRing
+}
+
+func (m mockPartitionRingReader) PartitionRing() *ring.PartitionRing {
+	return m.ring
+}
+
 type mockIngester struct {
 	grpc_health_v1.HealthClient
 	logproto.PusherClient
@@ -1124,7 +1499,7 @@ type mockIngester struct {
 	pushed       []*logproto.PushRequest
 }
 
-func (i *mockIngester) Push(ctx context.Context, in *logproto.PushRequest, opts ...grpc.CallOption) (*logproto.PushResponse, error) {
+func (i *mockIngester) Push(_ context.Context, in *logproto.PushRequest, _ ...grpc.CallOption) (*logproto.PushResponse, error) {
 	if i.failAfter > 0 {
 		time.Sleep(i.failAfter)
 		return nil, fmt.Errorf("push request failed")
@@ -1140,7 +1515,18 @@ func (i *mockIngester) Push(ctx context.Context, in *logproto.PushRequest, opts 
 	return nil, nil
 }
 
-func (i *mockIngester) GetStreamRates(ctx context.Context, in *logproto.StreamRatesRequest, opts ...grpc.CallOption) (*logproto.StreamRatesResponse, error) {
+func (i *mockIngester) Peek() *logproto.PushRequest {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	if len(i.pushed) == 0 {
+		return nil
+	}
+
+	return i.pushed[0]
+}
+
+func (i *mockIngester) GetStreamRates(_ context.Context, _ *logproto.StreamRatesRequest, _ ...grpc.CallOption) (*logproto.StreamRatesResponse, error) {
 	return &logproto.StreamRatesResponse{}, nil
 }
 
@@ -1149,9 +1535,373 @@ func (i *mockIngester) Close() error {
 }
 
 type fakeRateStore struct {
-	rate int64
+	rate     int64
+	pushRate float64
 }
 
-func (s *fakeRateStore) RateFor(_ string, _ uint64) int64 {
-	return s.rate
+func (s *fakeRateStore) RateFor(_ string, _ uint64) (int64, float64) {
+	return s.rate, s.pushRate
+}
+
+type mockTee struct {
+	mu         sync.Mutex
+	duplicated [][]KeyedStream
+	tenant     string
+}
+
+func (mt *mockTee) Duplicate(tenant string, streams []KeyedStream) {
+	mt.mu.Lock()
+	defer mt.mu.Unlock()
+	mt.duplicated = append(mt.duplicated, streams)
+	mt.tenant = tenant
+}
+
+func TestDistributorTee(t *testing.T) {
+	data := []*logproto.PushRequest{
+		{
+			Streams: []logproto.Stream{
+				{
+					Labels: "{job=\"foo\"}",
+					Entries: []logproto.Entry{
+						{Timestamp: time.Unix(123456, 0), Line: "line 1"},
+						{Timestamp: time.Unix(123457, 0), Line: "line 2"},
+					},
+				},
+			},
+		},
+		{
+			Streams: []logproto.Stream{
+				{
+					Labels: "{job=\"foo\"}",
+					Entries: []logproto.Entry{
+						{Timestamp: time.Unix(123458, 0), Line: "line 3"},
+						{Timestamp: time.Unix(123459, 0), Line: "line 4"},
+					},
+				},
+				{
+					Labels: "{job=\"bar\"}",
+					Entries: []logproto.Entry{
+						{Timestamp: time.Unix(123458, 0), Line: "line 5"},
+						{Timestamp: time.Unix(123459, 0), Line: "line 6"},
+					},
+				},
+			},
+		},
+	}
+
+	limits := &validation.Limits{}
+	flagext.DefaultValues(limits)
+	limits.RejectOldSamples = false
+	distributors, _ := prepare(t, 1, 3, limits, nil)
+
+	tee := mockTee{}
+	distributors[0].tee = &tee
+
+	for i, td := range data {
+		_, err := distributors[0].Push(ctx, td)
+		require.NoError(t, err)
+
+		for j, streams := range td.Streams {
+			assert.Equal(t, tee.duplicated[i][j].Stream.Entries, streams.Entries)
+		}
+
+		require.Equal(t, "test", tee.tenant)
+	}
+}
+
+func Test_DetectLogLevels(t *testing.T) {
+	setup := func(discoverLogLevels bool) (*validation.Limits, *mockIngester) {
+		limits := &validation.Limits{}
+		flagext.DefaultValues(limits)
+
+		limits.DiscoverLogLevels = discoverLogLevels
+		limits.AllowStructuredMetadata = true
+		return limits, &mockIngester{}
+	}
+
+	t.Run("log level detection disabled", func(t *testing.T) {
+		limits, ingester := setup(false)
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		writeReq := makeWriteRequestWithLabels(1, 10, []string{`{foo="bar"}`})
+		_, err := distributors[0].Push(ctx, writeReq)
+		require.NoError(t, err)
+		topVal := ingester.Peek()
+		require.Equal(t, `{foo="bar"}`, topVal.Streams[0].Labels)
+		require.Len(t, topVal.Streams[0].Entries[0].StructuredMetadata, 0)
+	})
+
+	t.Run("log level detection enabled but level cannot be detected", func(t *testing.T) {
+		limits, ingester := setup(true)
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		writeReq := makeWriteRequestWithLabels(1, 10, []string{`{foo="bar"}`})
+		_, err := distributors[0].Push(ctx, writeReq)
+		require.NoError(t, err)
+		topVal := ingester.Peek()
+		require.Equal(t, `{foo="bar"}`, topVal.Streams[0].Labels)
+		require.Len(t, topVal.Streams[0].Entries[0].StructuredMetadata, 0)
+	})
+
+	t.Run("log level detection enabled and warn logs", func(t *testing.T) {
+		for _, level := range []string{"warn", "Wrn", "WARNING"} {
+			limits, ingester := setup(true)
+			distributors, _ := prepare(
+				t,
+				1,
+				5,
+				limits,
+				func(_ string) (ring_client.PoolClient, error) { return ingester, nil },
+			)
+
+			writeReq := makeWriteRequestWithLabelsWithLevel(1, 10, []string{`{foo="bar"}`}, level)
+			_, err := distributors[0].Push(ctx, writeReq)
+			require.NoError(t, err)
+			topVal := ingester.Peek()
+			require.Equal(t, `{foo="bar"}`, topVal.Streams[0].Labels)
+			require.Equal(t, push.LabelsAdapter{
+				{
+					Name:  constants.LevelLabel,
+					Value: constants.LogLevelWarn,
+				},
+			}, topVal.Streams[0].Entries[0].StructuredMetadata, fmt.Sprintf("level: %s", level))
+		}
+	})
+
+	t.Run("log level detection enabled but log level already present in stream", func(t *testing.T) {
+		limits, ingester := setup(true)
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		writeReq := makeWriteRequestWithLabels(1, 10, []string{`{foo="bar", level="debug"}`})
+		_, err := distributors[0].Push(ctx, writeReq)
+		require.NoError(t, err)
+		topVal := ingester.Peek()
+		require.Equal(t, `{foo="bar", level="debug"}`, topVal.Streams[0].Labels)
+		sm := topVal.Streams[0].Entries[0].StructuredMetadata
+		require.Len(t, sm, 1)
+		require.Equal(t, sm[0].Name, constants.LevelLabel)
+		require.Equal(t, sm[0].Value, constants.LogLevelDebug)
+	})
+
+	t.Run("log level detection enabled but log level already present as structured metadata", func(t *testing.T) {
+		limits, ingester := setup(true)
+		distributors, _ := prepare(t, 1, 5, limits, func(_ string) (ring_client.PoolClient, error) { return ingester, nil })
+
+		writeReq := makeWriteRequestWithLabels(1, 10, []string{`{foo="bar"}`})
+		writeReq.Streams[0].Entries[0].StructuredMetadata = push.LabelsAdapter{
+			{
+				Name:  "severity",
+				Value: constants.LogLevelWarn,
+			},
+		}
+		_, err := distributors[0].Push(ctx, writeReq)
+		require.NoError(t, err)
+		topVal := ingester.Peek()
+		require.Equal(t, `{foo="bar"}`, topVal.Streams[0].Labels)
+		sm := topVal.Streams[0].Entries[0].StructuredMetadata
+		require.Equal(t, push.LabelsAdapter{
+			{
+				Name:  "severity",
+				Value: constants.LogLevelWarn,
+			}, {
+				Name:  constants.LevelLabel,
+				Value: constants.LogLevelWarn,
+			},
+		}, sm)
+	})
+}
+
+func Test_detectLogLevelFromLogEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		entry            logproto.Entry
+		expectedLogLevel string
+	}{
+		{
+			name: "use severity number from otlp logs",
+			entry: logproto.Entry{
+				Line: "error",
+				StructuredMetadata: push.LabelsAdapter{
+					{
+						Name:  loghttp_push.OTLPSeverityNumber,
+						Value: fmt.Sprintf("%d", plog.SeverityNumberDebug3),
+					},
+				},
+			},
+			expectedLogLevel: constants.LogLevelDebug,
+		},
+		{
+			name: "invalid severity number should not cause any issues",
+			entry: logproto.Entry{
+				StructuredMetadata: push.LabelsAdapter{
+					{
+						Name:  loghttp_push.OTLPSeverityNumber,
+						Value: "foo",
+					},
+				},
+			},
+			expectedLogLevel: constants.LogLevelInfo,
+		},
+		{
+			name: "non otlp without any of the log level keywords in log line",
+			entry: logproto.Entry{
+				Line: "foo",
+			},
+			expectedLogLevel: constants.LogLevelUnknown,
+		},
+		{
+			name: "non otlp with log level keywords in log line",
+			entry: logproto.Entry{
+				Line: "this is a warning log",
+			},
+			expectedLogLevel: constants.LogLevelWarn,
+		},
+		{
+			name: "json log line with an error",
+			entry: logproto.Entry{
+				Line: `{"foo":"bar","msg":"message with keyword error but it should not get picked up","level":"critical"}`,
+			},
+			expectedLogLevel: constants.LogLevelCritical,
+		},
+		{
+			name: "json log line with an error",
+			entry: logproto.Entry{
+				Line: `{"FOO":"bar","MSG":"message with keyword error but it should not get picked up","LEVEL":"Critical"}`,
+			},
+			expectedLogLevel: constants.LogLevelCritical,
+		},
+		{
+			name: "json log line with an warning",
+			entry: logproto.Entry{
+				Line: `{"foo":"bar","msg":"message with keyword warn but it should not get picked up","level":"warn"}`,
+			},
+			expectedLogLevel: constants.LogLevelWarn,
+		},
+		{
+			name: "json log line with an warning",
+			entry: logproto.Entry{
+				Line: `{"foo":"bar","msg":"message with keyword warn but it should not get picked up","SEVERITY":"FATAL"}`,
+			},
+			expectedLogLevel: constants.LogLevelFatal,
+		},
+		{
+			name: "json log line with an error in block case",
+			entry: logproto.Entry{
+				Line: `{"foo":"bar","msg":"message with keyword warn but it should not get picked up","level":"ERR"}`,
+			},
+			expectedLogLevel: constants.LogLevelError,
+		},
+		{
+			name: "json log line with an INFO in block case",
+			entry: logproto.Entry{
+				Line: `{"foo":"bar","msg":"message with keyword INFO get picked up"}`,
+			},
+			expectedLogLevel: constants.LogLevelInfo,
+		},
+		{
+			name: "logfmt log line with an INFO and not level returns info log level",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with info and not level should get picked up"`,
+			},
+			expectedLogLevel: constants.LogLevelInfo,
+		},
+		{
+			name: "logfmt log line with a warn",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword error but it should not get picked up" level=warn`,
+			},
+			expectedLogLevel: constants.LogLevelWarn,
+		},
+		{
+			name: "logfmt log line with a warn with camel case",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword error but it should not get picked up" level=Warn`,
+			},
+			expectedLogLevel: constants.LogLevelWarn,
+		},
+		{
+			name: "logfmt log line with a trace",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword error but it should not get picked up" level=Trace`,
+			},
+			expectedLogLevel: constants.LogLevelTrace,
+		},
+		{
+			name: "logfmt log line with some other level returns unknown log level",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword but it should not get picked up" level=NA`,
+			},
+			expectedLogLevel: constants.LogLevelUnknown,
+		},
+		{
+			name: "logfmt log line with label Severity is allowed for level detection",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword but it should not get picked up" severity=critical`,
+			},
+			expectedLogLevel: constants.LogLevelCritical,
+		},
+		{
+			name: "logfmt log line with label Severity with camelcase is allowed for level detection",
+			entry: logproto.Entry{
+				Line: `Foo=bar MSG="Message with keyword but it should not get picked up" Severity=critical`,
+			},
+			expectedLogLevel: constants.LogLevelCritical,
+		},
+		{
+			name: "logfmt log line with a info with non standard case",
+			entry: logproto.Entry{
+				Line: `foo=bar msg="message with keyword error but it should not get picked up" level=inFO`,
+			},
+			expectedLogLevel: constants.LogLevelInfo,
+		},
+		{
+			name: "logfmt log line with a info with non block case for level",
+			entry: logproto.Entry{
+				Line: `FOO=bar MSG="message with keyword error but it should not get picked up" LEVEL=inFO`,
+			},
+			expectedLogLevel: constants.LogLevelInfo,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detectedLogLevel := detectLogLevelFromLogEntry(tc.entry, logproto.FromLabelAdaptersToLabels(tc.entry.StructuredMetadata))
+			require.Equal(t, tc.expectedLogLevel, detectedLogLevel)
+		})
+	}
+}
+
+func Benchmark_extractLogLevelFromLogLine(b *testing.B) {
+	// looks scary, but it is some random text of about 1000 chars from charset a-zA-Z0-9
+	logLine := "dGzJ6rKk Zj U04SWEqEK4Uwho8 DpNyLz0 Nfs61HJ fz5iKVigg 44 kabOz7ghviGmVONriAdz4lA 7Kis1OTvZGT3 " +
+		"ZB6ioK4fgJLbzm AuIcbnDZKx3rZ aeZJQzRb3zhrn vok8Efav6cbyzbRUQ PYsEdQxCpdCDcGNsKG FVwe61 nhF06t9hXSNySEWa " +
+		"gBAXP1J8oEL grep1LfeKjA23ntszKA A772vNyxjQF SjWfJypwI7scxk oLlqRzrDl ostO4CCwx01wDB7Utk0 64A7p5eQDITE6zc3 " +
+		"rGL DrPnD K2oj Vro2JEvI2YScstnMx SVu H o GUl8fxZJJ1HY0 C  QOA HNJr5XtsCNRrLi 0w C0Pd8XWbVZyQkSlsRm zFw1lW  " +
+		"c8j6JFQuQnnB EyL20z0 2Duo0dvynnAGD 45ut2Z Jrz8Nd7Pmg 5oQ09r9vnmy U2 mKHO5uBfndPnbjbr  mzOvQs9bM1 9e " +
+		"yvNSfcbPyhuWvB VKJt2kp8IoTVc XCe Uva5mp9NrGh3TEbjQu1 C  Zvdk uPr7St2m kwwMRcS9eC aS6ZuL48eoQUiKo VBPd4m49ymr " +
+		"eQZ0fbjWpj6qA A6rYs4E 58dqh9ntu8baziDJ4c 1q6aVEig YrMXTF hahrlt 6hKVHfZLFZ V 9hEVN0WKgcpu6L zLxo6YC57 XQyfAGpFM " +
+		"Wm3 S7if5qCXPzvuMZ2 gNHdst Z39s9uNc58QBDeYRW umyIF BDqEdqhE tAs2gidkqee3aux8b NLDb7 ZZLekc0cQZ GUKQuBg2pL2y1S " +
+		"RJtBuW ABOqQHLSlNuUw ZlM2nGS2 jwA7cXEOJhY 3oPv4gGAz  Uqdre16MF92C06jOH dayqTCK8XmIilT uvgywFSfNadYvRDQa " +
+		"iUbswJNcwqcr6huw LAGrZS8NGlqqzcD2wFU rm Uqcrh3TKLUCkfkwLm  5CIQbxMCUz boBrEHxvCBrUo YJoF2iyif4xq3q yk "
+
+	for i := 0; i < b.N; i++ {
+		level := extractLogLevelFromLogLine(logLine)
+		require.Equal(b, constants.LogLevelUnknown, level)
+	}
+}
+
+func Benchmark_optParseExtractLogLevelFromLogLineJson(b *testing.B) {
+	logLine := `{"msg": "something" , "level": "error", "id": "1"}`
+
+	for i := 0; i < b.N; i++ {
+		level := extractLogLevelFromLogLine(logLine)
+		require.Equal(b, constants.LogLevelError, level)
+	}
+}
+
+func Benchmark_optParseExtractLogLevelFromLogLineLogfmt(b *testing.B) {
+	logLine := `FOO=bar MSG="message with keyword error but it should not get picked up" LEVEL=inFO`
+
+	for i := 0; i < b.N; i++ {
+		level := extractLogLevelFromLogLine(logLine)
+		require.Equal(b, constants.LogLevelInfo, level)
+	}
 }

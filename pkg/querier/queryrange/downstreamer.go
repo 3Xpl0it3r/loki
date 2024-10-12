@@ -3,18 +3,21 @@ package queryrange
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"time"
 
-	"github.com/go-kit/log/level"
+	"github.com/grafana/dskit/concurrency"
 	"github.com/grafana/dskit/tenant"
+	"github.com/opentracing/opentracing-go"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/grafana/loki/pkg/loghttp"
-	"github.com/grafana/loki/pkg/logql"
-	"github.com/grafana/loki/pkg/logqlmodel"
-	"github.com/grafana/loki/pkg/querier/queryrange/queryrangebase"
-	"github.com/grafana/loki/pkg/util/spanlogger"
+	"github.com/grafana/loki/v3/pkg/logql"
+	"github.com/grafana/loki/v3/pkg/logql/syntax"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/grafana/loki/v3/pkg/querier/plan"
+	"github.com/grafana/loki/v3/pkg/querier/queryrange/queryrangebase"
 )
 
 const (
@@ -24,21 +27,28 @@ const (
 type DownstreamHandler struct {
 	limits Limits
 	next   queryrangebase.Handler
+
+	splitAlign bool
 }
 
-func ParamsToLokiRequest(params logql.Params, shards logql.Shards) queryrangebase.Request {
-	if params.Start().Equal(params.End()) {
+func ParamsToLokiRequest(params logql.Params) queryrangebase.Request {
+	if logql.GetRangeType(params) == logql.InstantType {
 		return &LokiInstantRequest{
-			Query:     params.Query(),
+			Query:     params.QueryString(),
 			Limit:     params.Limit(),
 			TimeTs:    params.Start(),
 			Direction: params.Direction(),
 			Path:      "/loki/api/v1/query", // TODO(owen-d): make this derivable
-			Shards:    shards.Encode(),
+			Shards:    params.Shards(),
+			Plan: &plan.QueryPlan{
+				AST: params.GetExpression(),
+			},
+			StoreChunks:    params.GetStoreChunks(),
+			CachingOptions: params.CachingOptions(),
 		}
 	}
 	return &LokiRequest{
-		Query:     params.Query(),
+		Query:     params.QueryString(),
 		Limit:     params.Limit(),
 		Step:      params.Step().Milliseconds(),
 		Interval:  params.Interval().Milliseconds(),
@@ -46,7 +56,12 @@ func ParamsToLokiRequest(params logql.Params, shards logql.Shards) queryrangebas
 		EndTs:     params.End(),
 		Direction: params.Direction(),
 		Path:      "/loki/api/v1/query_range", // TODO(owen-d): make this derivable
-		Shards:    shards.Encode(),
+		Shards:    params.Shards(),
+		Plan: &plan.QueryPlan{
+			AST: params.GetExpression(),
+		},
+		StoreChunks:    params.GetStoreChunks(),
+		CachingOptions: params.CachingOptions(),
 	}
 }
 
@@ -77,6 +92,7 @@ func (h DownstreamHandler) Downstreamer(ctx context.Context) logql.Downstreamer 
 		parallelism: p,
 		locks:       locks,
 		handler:     h.next,
+		splitAlign:  h.splitAlign,
 	}
 }
 
@@ -85,14 +101,48 @@ type instance struct {
 	parallelism int
 	locks       chan struct{}
 	handler     queryrangebase.Handler
+
+	splitAlign bool
 }
 
-func (in instance) Downstream(ctx context.Context, queries []logql.DownstreamQuery) ([]logqlmodel.Result, error) {
-	return in.For(ctx, queries, func(qry logql.DownstreamQuery) (logqlmodel.Result, error) {
-		req := ParamsToLokiRequest(qry.Params, qry.Shards).WithQuery(qry.Expr.String())
-		logger, ctx := spanlogger.New(ctx, "DownstreamHandler.instance")
-		defer logger.Finish()
-		level.Debug(logger).Log("shards", fmt.Sprintf("%+v", qry.Shards), "query", req.GetQuery(), "step", req.GetStep())
+// withoutOffset returns the given query string with offsets removed and timestamp adjusted accordingly. If no offset is present in original query, it will be returned as is.
+func withoutOffset(query logql.DownstreamQuery) (string, time.Time, time.Time) {
+	expr := query.Params.GetExpression()
+
+	var (
+		newStart = query.Params.Start()
+		newEnd   = query.Params.End()
+	)
+	expr.Walk(func(e syntax.Expr) {
+		switch rng := e.(type) {
+		case *syntax.RangeAggregationExpr:
+			off := rng.Left.Offset
+
+			if off != 0 {
+				rng.Left.Offset = 0 // remove offset
+
+				// adjust start and end time
+				newEnd = newEnd.Add(-off)
+				newStart = newStart.Add(-off)
+
+			}
+		}
+	})
+	return expr.String(), newStart, newEnd
+}
+
+func (in instance) Downstream(ctx context.Context, queries []logql.DownstreamQuery, acc logql.Accumulator) ([]logqlmodel.Result, error) {
+	return in.For(ctx, queries, acc, func(qry logql.DownstreamQuery) (logqlmodel.Result, error) {
+		var req queryrangebase.Request
+		if in.splitAlign {
+			qs, newStart, newEnd := withoutOffset(qry)
+			req = ParamsToLokiRequest(qry.Params).WithQuery(qs).WithStartEnd(newStart, newEnd)
+		} else {
+			req = ParamsToLokiRequest(qry.Params).WithQuery(qry.Params.GetExpression().String())
+		}
+		sp, ctx := opentracing.StartSpanFromContext(ctx, "DownstreamHandler.instance")
+		defer sp.Finish()
+		sp.LogKV("shards", fmt.Sprintf("%+v", qry.Params.Shards()), "query", req.GetQuery(), "start", req.GetStart(), "end", req.GetEnd(), "step", req.GetStep(), "handler", reflect.TypeOf(in.handler), "engine", "downstream")
 
 		res, err := in.handler.Do(ctx, req)
 		if err != nil {
@@ -106,61 +156,51 @@ func (in instance) Downstream(ctx context.Context, queries []logql.DownstreamQue
 func (in instance) For(
 	ctx context.Context,
 	queries []logql.DownstreamQuery,
+	acc logql.Accumulator,
 	fn func(logql.DownstreamQuery) (logqlmodel.Result, error),
 ) ([]logqlmodel.Result, error) {
-	type resp struct {
-		i   int
-		res logqlmodel.Result
-		err error
-	}
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	ch := make(chan resp)
 
-	// Make one goroutine to dispatch the other goroutines, bounded by instance parallelism
+	ch := make(chan logql.Resp)
+
+	// ForEachJob blocks until all are done. However, we want to process the
+	// results as they come in. That's why we start everything in another
+	// gorouting.
 	go func() {
-		for i := 0; i < len(queries); i++ {
+		err := concurrency.ForEachJob(ctx, len(queries), in.parallelism, func(ctx context.Context, i int) error {
+			res, err := fn(queries[i])
+			response := logql.Resp{
+				I:   i,
+				Res: res,
+				Err: err,
+			}
+
+			// Feed the result into the channel unless the work has completed.
 			select {
 			case <-ctx.Done():
-				break
-			case <-in.locks:
-				go func(i int) {
-					// release lock back into pool
-					defer func() {
-						in.locks <- struct{}{}
-					}()
-
-					res, err := fn(queries[i])
-					response := resp{
-						i:   i,
-						res: res,
-						err: err,
-					}
-
-					// Feed the result into the channel unless the work has completed.
-					select {
-					case <-ctx.Done():
-					case ch <- response:
-					}
-				}(i)
+			case ch <- response:
+			}
+			return err
+		})
+		if err != nil {
+			ch <- logql.Resp{
+				I:   -1,
+				Err: err,
 			}
 		}
+		close(ch)
 	}()
 
-	results := make([]logqlmodel.Result, len(queries))
-	for i := 0; i < len(queries); i++ {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case resp := <-ch:
-			if resp.err != nil {
-				return nil, resp.err
-			}
-			results[resp.i] = resp.res
+	for resp := range ch {
+		if resp.Err != nil {
+			return nil, resp.Err
+		}
+		if err := acc.Accumulate(ctx, resp.Res, resp.I); err != nil {
+			return nil, err
 		}
 	}
-	return results, nil
+	return acc.Result(), nil
 }
 
 // convert to matrix
@@ -173,11 +213,11 @@ func sampleStreamToMatrix(streams []queryrangebase.SampleStream) parser.Value {
 			x.Metric = append(x.Metric, labels.Label(l))
 		}
 
-		x.Points = make([]promql.Point, 0, len(stream.Samples))
+		x.Floats = make([]promql.FPoint, 0, len(stream.Samples))
 		for _, sample := range stream.Samples {
-			x.Points = append(x.Points, promql.Point{
+			x.Floats = append(x.Floats, promql.FPoint{
 				T: sample.TimestampMs,
-				V: sample.Value,
+				F: sample.Value,
 			})
 		}
 
@@ -195,53 +235,10 @@ func sampleStreamToVector(streams []queryrangebase.SampleStream) parser.Value {
 			x.Metric = append(x.Metric, labels.Label(l))
 		}
 
-		x.Point = promql.Point{
-			T: stream.Samples[0].TimestampMs,
-			V: stream.Samples[0].Value,
-		}
+		x.T = stream.Samples[0].TimestampMs
+		x.F = stream.Samples[0].Value
 
 		xs = append(xs, x)
 	}
 	return xs
-}
-
-func ResponseToResult(resp queryrangebase.Response) (logqlmodel.Result, error) {
-	switch r := resp.(type) {
-	case *LokiResponse:
-		if r.Error != "" {
-			return logqlmodel.Result{}, fmt.Errorf("%s: %s", r.ErrorType, r.Error)
-		}
-
-		streams := make(logqlmodel.Streams, 0, len(r.Data.Result))
-
-		for _, stream := range r.Data.Result {
-			streams = append(streams, stream)
-		}
-
-		return logqlmodel.Result{
-			Statistics: r.Statistics,
-			Data:       streams,
-			Headers:    resp.GetHeaders(),
-		}, nil
-
-	case *LokiPromResponse:
-		if r.Response.Error != "" {
-			return logqlmodel.Result{}, fmt.Errorf("%s: %s", r.Response.ErrorType, r.Response.Error)
-		}
-		if r.Response.Data.ResultType == loghttp.ResultTypeVector {
-			return logqlmodel.Result{
-				Statistics: r.Statistics,
-				Data:       sampleStreamToVector(r.Response.Data.Result),
-				Headers:    resp.GetHeaders(),
-			}, nil
-		}
-		return logqlmodel.Result{
-			Statistics: r.Statistics,
-			Data:       sampleStreamToMatrix(r.Response.Data.Result),
-			Headers:    resp.GetHeaders(),
-		}, nil
-
-	default:
-		return logqlmodel.Result{}, fmt.Errorf("cannot decode (%T)", resp)
-	}
 }

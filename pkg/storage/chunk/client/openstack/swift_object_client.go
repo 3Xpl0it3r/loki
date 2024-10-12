@@ -9,14 +9,14 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ncw/swift"
+	swift "github.com/ncw/swift/v2"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	bucket_swift "github.com/grafana/loki/pkg/storage/bucket/swift"
-	"github.com/grafana/loki/pkg/storage/chunk/client"
-	"github.com/grafana/loki/pkg/storage/chunk/client/hedging"
-	"github.com/grafana/loki/pkg/util/log"
+	bucket_swift "github.com/grafana/loki/v3/pkg/storage/bucket/swift"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/hedging"
+	"github.com/grafana/loki/v3/pkg/util/log"
 )
 
 var defaultTransport http.RoundTripper = &http.Transport{
@@ -61,7 +61,7 @@ func NewSwiftObjectClient(cfg SwiftConfig, hedgingCfg hedging.Config) (*SwiftObj
 		return nil, err
 	}
 	// Ensure the container is created, no error is returned if it already exists.
-	if err := c.ContainerCreate(cfg.ContainerName, nil); err != nil {
+	if err := c.ContainerCreate(context.Background(), cfg.Config.ContainerName, nil); err != nil {
 		return nil, err
 	}
 	hedging, err := createConnection(cfg, hedgingCfg, true)
@@ -78,30 +78,30 @@ func NewSwiftObjectClient(cfg SwiftConfig, hedgingCfg hedging.Config) (*SwiftObj
 func createConnection(cfg SwiftConfig, hedgingCfg hedging.Config, hedging bool) (*swift.Connection, error) {
 	// Create a connection
 	c := &swift.Connection{
-		AuthVersion:    cfg.AuthVersion,
-		AuthUrl:        cfg.AuthURL,
-		Internal:       cfg.Internal,
-		ApiKey:         cfg.Password,
-		UserName:       cfg.Username,
-		UserId:         cfg.UserID,
-		Retries:        cfg.MaxRetries,
-		ConnectTimeout: cfg.ConnectTimeout,
-		Timeout:        cfg.RequestTimeout,
-		TenantId:       cfg.ProjectID,
-		Tenant:         cfg.ProjectName,
-		TenantDomain:   cfg.ProjectDomainName,
-		TenantDomainId: cfg.ProjectDomainID,
-		Domain:         cfg.DomainName,
-		DomainId:       cfg.DomainID,
-		Region:         cfg.RegionName,
+		AuthVersion:    cfg.Config.AuthVersion,
+		AuthUrl:        cfg.Config.AuthURL,
+		Internal:       cfg.Config.Internal,
+		ApiKey:         cfg.Config.Password,
+		UserName:       cfg.Config.Username,
+		UserId:         cfg.Config.UserID,
+		Retries:        cfg.Config.MaxRetries,
+		ConnectTimeout: cfg.Config.ConnectTimeout,
+		Timeout:        cfg.Config.RequestTimeout,
+		TenantId:       cfg.Config.ProjectID,
+		Tenant:         cfg.Config.ProjectName,
+		TenantDomain:   cfg.Config.ProjectDomainName,
+		TenantDomainId: cfg.Config.ProjectDomainID,
+		Domain:         cfg.Config.DomainName,
+		DomainId:       cfg.Config.DomainID,
+		Region:         cfg.Config.RegionName,
 		Transport:      defaultTransport,
 	}
 
 	switch {
-	case cfg.UserDomainName != "":
-		c.Domain = cfg.UserDomainName
-	case cfg.UserDomainID != "":
-		c.DomainId = cfg.UserDomainID
+	case cfg.Config.UserDomainName != "":
+		c.Domain = cfg.Config.UserDomainName
+	case cfg.Config.UserDomainID != "":
+		c.DomainId = cfg.Config.UserDomainID
 	}
 	if hedging {
 		var err error
@@ -111,7 +111,7 @@ func createConnection(cfg SwiftConfig, hedgingCfg hedging.Config, hedging bool) 
 		}
 	}
 
-	err := c.Authenticate()
+	err := c.Authenticate(context.TODO())
 	if err != nil {
 		return nil, err
 	}
@@ -124,10 +124,29 @@ func (s *SwiftObjectClient) Stop() {
 	s.hedgingConn.UnAuthenticate()
 }
 
+func (s *SwiftObjectClient) ObjectExists(ctx context.Context, objectKey string) (bool, error) {
+	if _, err := s.GetAttributes(ctx, objectKey); err != nil {
+		if s.IsObjectNotFoundErr(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *SwiftObjectClient) GetAttributes(ctx context.Context, objectKey string) (client.ObjectAttributes, error) {
+	info, _, err := s.hedgingConn.Object(ctx, s.cfg.Config.ContainerName, objectKey)
+	if err != nil {
+		return client.ObjectAttributes{}, nil
+	}
+
+	return client.ObjectAttributes{Size: info.Bytes}, nil
+}
+
 // GetObject returns a reader and the size for the specified object key from the configured swift container.
 func (s *SwiftObjectClient) GetObject(ctx context.Context, objectKey string) (io.ReadCloser, int64, error) {
 	var buf bytes.Buffer
-	_, err := s.hedgingConn.ObjectGet(s.cfg.ContainerName, objectKey, &buf, false, nil)
+	_, err := s.hedgingConn.ObjectGet(ctx, s.cfg.Config.ContainerName, objectKey, &buf, false, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -135,9 +154,23 @@ func (s *SwiftObjectClient) GetObject(ctx context.Context, objectKey string) (io
 	return io.NopCloser(&buf), int64(buf.Len()), nil
 }
 
+// GetObject returns a reader and the size for the specified object key from the configured swift container.
+func (s *SwiftObjectClient) GetObjectRange(ctx context.Context, objectKey string, offset, length int64) (io.ReadCloser, error) {
+	var buf bytes.Buffer
+	h := swift.Headers{
+		"Range": fmt.Sprintf("bytes=%d-%d", offset, offset+length-1),
+	}
+	_, err := s.hedgingConn.ObjectGet(ctx, s.cfg.Config.ContainerName, objectKey, &buf, false, h)
+	if err != nil {
+		return nil, err
+	}
+
+	return io.NopCloser(&buf), nil
+}
+
 // PutObject puts the specified bytes into the configured Swift container at the provided key
-func (s *SwiftObjectClient) PutObject(ctx context.Context, objectKey string, object io.ReadSeeker) error {
-	_, err := s.conn.ObjectPut(s.cfg.ContainerName, objectKey, object, false, "", "", nil)
+func (s *SwiftObjectClient) PutObject(ctx context.Context, objectKey string, object io.Reader) error {
+	_, err := s.conn.ObjectPut(ctx, s.cfg.Config.ContainerName, objectKey, object, false, "", "", nil)
 	return err
 }
 
@@ -154,7 +187,7 @@ func (s *SwiftObjectClient) List(ctx context.Context, prefix, delimiter string) 
 		opts.Delimiter = []rune(delimiter)[0]
 	}
 
-	objs, err := s.conn.Objects(s.cfg.ContainerName, opts)
+	objs, err := s.conn.ObjectsAll(ctx, s.cfg.Config.ContainerName, opts)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -181,10 +214,13 @@ func (s *SwiftObjectClient) List(ctx context.Context, prefix, delimiter string) 
 
 // DeleteObject deletes the specified object key from the configured Swift container.
 func (s *SwiftObjectClient) DeleteObject(ctx context.Context, objectKey string) error {
-	return s.conn.ObjectDelete(s.cfg.ContainerName, objectKey)
+	return s.conn.ObjectDelete(ctx, s.cfg.Config.ContainerName, objectKey)
 }
 
 // IsObjectNotFoundErr returns true if error means that object is not found. Relevant to GetObject and DeleteObject operations.
 func (s *SwiftObjectClient) IsObjectNotFoundErr(err error) bool {
 	return errors.Is(err, swift.ObjectNotFound)
 }
+
+// TODO(dannyk): implement for client
+func (s *SwiftObjectClient) IsRetryableErr(error) bool { return false }

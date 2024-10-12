@@ -1,7 +1,8 @@
 ---
 title: Blocking Queries
-description: Blocking Queries
-weight: 60
+menuTitle:  
+description: Describes how to configure Loki to block expensive queries using per-tenant overrides.
+weight: 
 ---
 # Blocking Queries
 
@@ -9,7 +10,7 @@ In certain situations, you may not be able to control the queries being sent to 
 may be intentionally or unintentionally expensive to run, and they may affect the overall stability or cost of running
 your service.
 
-You can block queries using [per-tenant overrides]({{<relref "../configuration/#runtime-configuration-file">}}), like so:
+You can block queries using [per-tenant overrides](https://grafana.com/docs/loki/<LOKI_VERSION>/configure/#runtime-configuration-file), like so:
 
 ```yaml
 overrides:
@@ -29,7 +30,14 @@ overrides:
       - pattern: '.*prod.*'
         regex: true
         types: filter,limited
+
+      # block any query that matches this query hash
+      - hash: 2943214005          # hash of {stream="stdout",pod="loki-canary-9w49x"}
+        types: filter,limited
 ```
+{{% admonition type="note" %}}
+Changes to these configurations **do not require a restart**; they are defined in the [runtime configuration file](https://grafana.com/docs/loki/<LOKI_VERSION>/configure/#runtime-configuration-file).
+{{% /admonition %}}
 
 The available query types are:
 
@@ -37,7 +45,17 @@ The available query types are:
 - `filter`: a query with a log filter, e.g. `{env="prod"} |= "error"`
 - `limited`: a query without a filter or a metric aggregation
 
-**Note:** the order of patterns is preserved, so the first matching pattern will be used
+The `hash` option uses a [32-bit FNV-1](https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function) hash of the query string, represented as a 32-bit unsigned integer.
+This can often be easier to use than query strings that are long or require lots of string escaping. A `query_hash` field
+is logged with every query request in the `query-frontend` and `querier` logs, for easy reference. Here's an example log line:
+
+```logfmt
+level=info ts=2023-03-30T09:08:15.2614555Z caller=metrics.go:152 component=frontend org_id=29 latency=fast 
+query="{stream=\"stdout\",pod=\"loki-canary-9w49x\"}" query_hash=2943214005 query_type=limited range_type=range ...
+```
+{{% admonition type="note" %}}
+The order of patterns is preserved, so the first matching pattern will be used.
+{{% /admonition %}}
 
 ## Observing blocked queries
 
@@ -45,4 +63,4 @@ Blocked queries are logged, as well as counted in the `loki_blocked_queries` met
 
 ## Scope
 
-Queries received via the API and executed as [alerting/recording rules]({{<relref "../alert">}}) will be blocked.
+Queries received via the API and executed as [alerting/recording rules]({{< relref "../alert" >}}) will be blocked.

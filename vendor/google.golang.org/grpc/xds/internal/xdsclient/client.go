@@ -21,21 +21,17 @@
 package xdsclient
 
 import (
-	"google.golang.org/grpc/xds/internal/xdsclient/bootstrap"
+	"google.golang.org/grpc/internal/xds/bootstrap"
 	"google.golang.org/grpc/xds/internal/xdsclient/load"
 	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
+
+	v3statuspb "github.com/envoyproxy/go-control-plane/envoy/service/status/v3"
 )
 
 // XDSClient is a full fledged gRPC client which queries a set of discovery APIs
 // (collectively termed as xDS) on a remote management server, to discover
 // various dynamic resources.
 type XDSClient interface {
-	WatchListener(string, func(xdsresource.ListenerUpdate, error)) func()
-	WatchRouteConfig(string, func(xdsresource.RouteConfigUpdate, error)) func()
-	WatchCluster(string, func(xdsresource.ClusterUpdate, error)) func()
-	WatchEndpoints(string, func(xdsresource.EndpointsUpdate, error)) func()
-	ReportLoad(*bootstrap.ServerConfig) (*load.Store, func())
-
 	// WatchResource uses xDS to discover the resource associated with the
 	// provided resource name. The resource type implementation determines how
 	// xDS requests are sent out and how responses are deserialized and
@@ -46,15 +42,17 @@ type XDSClient interface {
 	// instead use a resource-type-specific wrapper API provided by the relevant
 	// resource type implementation.
 	//
-	// TODO: Once this generic client API is fully implemented and integrated,
-	// delete the resource type specific watch APIs on this interface.
+	//
+	// During a race (e.g. an xDS response is received while the user is calling
+	// cancel()), there's a small window where the callback can be called after
+	// the watcher is canceled. Callers need to handle this case.
 	WatchResource(rType xdsresource.Type, resourceName string, watcher xdsresource.ResourceWatcher) (cancel func())
 
-	DumpLDS() map[string]xdsresource.UpdateWithMD
-	DumpRDS() map[string]xdsresource.UpdateWithMD
-	DumpCDS() map[string]xdsresource.UpdateWithMD
-	DumpEDS() map[string]xdsresource.UpdateWithMD
+	// DumpResources returns the status of the xDS resources. Returns a map of
+	// resource type URLs to a map of resource names to resource state.
+	DumpResources() (*v3statuspb.ClientStatusResponse, error)
+
+	ReportLoad(*bootstrap.ServerConfig) (*load.Store, func())
 
 	BootstrapConfig() *bootstrap.Config
-	Close()
 }

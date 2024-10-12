@@ -39,15 +39,16 @@ func newS3Config(cfg Config) (s3.Config, error) {
 	}
 
 	return s3.Config{
-		Bucket:          cfg.BucketName,
-		Endpoint:        cfg.Endpoint,
-		Region:          cfg.Region,
-		AccessKey:       cfg.AccessKeyID,
-		SecretKey:       cfg.SecretAccessKey.String(),
-		SessionToken:    cfg.SessionToken.String(),
-		Insecure:        cfg.Insecure,
-		SSEConfig:       sseCfg,
-		PutUserMetadata: map[string]string{awsStorageClassHeader: cfg.StorageClass},
+		Bucket:           cfg.BucketName,
+		Endpoint:         cfg.Endpoint,
+		Region:           cfg.Region,
+		AccessKey:        cfg.AccessKeyID,
+		SecretKey:        cfg.SecretAccessKey.String(),
+		SessionToken:     cfg.SessionToken.String(),
+		Insecure:         cfg.Insecure,
+		DisableDualstack: cfg.DisableDualstack,
+		SSEConfig:        sseCfg,
+		PutUserMetadata:  map[string]string{awsStorageClassHeader: cfg.StorageClass},
 		HTTPConfig: s3.HTTPConfig{
 			IdleConnTimeout:       model.Duration(cfg.HTTP.IdleConnTimeout),
 			ResponseHeaderTimeout: model.Duration(cfg.HTTP.ResponseHeaderTimeout),
@@ -59,7 +60,5 @@ func newS3Config(cfg Config) (s3.Config, error) {
 			MaxConnsPerHost:       cfg.HTTP.MaxConnsPerHost,
 			Transport:             cfg.HTTP.Transport,
 		},
-		// Enforce signature version 2 if CLI flag is set
-		SignatureV2: cfg.SignatureVersion == SignatureVersionV2,
 	}, nil
 }

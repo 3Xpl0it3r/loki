@@ -19,45 +19,30 @@
 package xdsclient
 
 import (
-	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
+	v3statuspb "github.com/envoyproxy/go-control-plane/envoy/service/status/v3"
 )
 
-func mergeMaps(maps []map[string]xdsresource.UpdateWithMD) map[string]xdsresource.UpdateWithMD {
-	ret := make(map[string]xdsresource.UpdateWithMD)
-	for _, m := range maps {
-		for k, v := range m {
-			ret[k] = v
-		}
-	}
-	return ret
-}
-
-func (c *clientImpl) dump(t xdsresource.ResourceType) map[string]xdsresource.UpdateWithMD {
+// DumpResources returns the status and contents of all xDS resources.
+func (c *clientImpl) DumpResources() (*v3statuspb.ClientStatusResponse, error) {
 	c.authorityMu.Lock()
 	defer c.authorityMu.Unlock()
-	maps := make([]map[string]xdsresource.UpdateWithMD, 0, len(c.authorities))
+
+	var retCfg []*v3statuspb.ClientConfig_GenericXdsConfig
 	for _, a := range c.authorities {
-		maps = append(maps, a.dump(t))
+		cfg, err := a.dumpResources()
+		if err != nil {
+			return nil, err
+		}
+		retCfg = append(retCfg, cfg...)
 	}
-	return mergeMaps(maps)
-}
 
-// DumpLDS returns the status and contents of LDS.
-func (c *clientImpl) DumpLDS() map[string]xdsresource.UpdateWithMD {
-	return c.dump(xdsresource.ListenerResource)
-}
-
-// DumpRDS returns the status and contents of RDS.
-func (c *clientImpl) DumpRDS() map[string]xdsresource.UpdateWithMD {
-	return c.dump(xdsresource.RouteConfigResource)
-}
-
-// DumpCDS returns the status and contents of CDS.
-func (c *clientImpl) DumpCDS() map[string]xdsresource.UpdateWithMD {
-	return c.dump(xdsresource.ClusterResource)
-}
-
-// DumpEDS returns the status and contents of EDS.
-func (c *clientImpl) DumpEDS() map[string]xdsresource.UpdateWithMD {
-	return c.dump(xdsresource.EndpointsResource)
+	return &v3statuspb.ClientStatusResponse{
+		Config: []*v3statuspb.ClientConfig{
+			{
+				// TODO: Populate ClientScope. Need to update go-control-plane dependency.
+				Node:              c.config.NodeProto,
+				GenericXdsConfigs: retCfg,
+			},
+		},
+	}, nil
 }

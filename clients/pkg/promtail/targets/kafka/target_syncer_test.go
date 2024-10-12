@@ -4,29 +4,28 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/grafana/loki/clients/pkg/logentry/stages"
-
-	"github.com/grafana/dskit/flagext"
-	"github.com/prometheus/common/config"
-
 	"github.com/Shopify/sarama"
 	"github.com/go-kit/log"
+	"github.com/grafana/dskit/flagext"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/grafana/loki/clients/pkg/promtail/client/fake"
-	"github.com/grafana/loki/clients/pkg/promtail/scrapeconfig"
+	"github.com/grafana/loki/v3/clients/pkg/logentry/stages"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/client/fake"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/scrapeconfig"
 )
 
 func Test_TopicDiscovery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	group := &testConsumerGroupHandler{}
+	group := &testConsumerGroupHandler{mu: &sync.Mutex{}}
 	TopicPollInterval = time.Microsecond
 	var closed bool
 	client := &mockKafkaClient{
@@ -47,36 +46,35 @@ func Test_TopicDiscovery(t *testing.T) {
 			cancel:        func() {},
 			ConsumerGroup: group,
 			logger:        log.NewNopLogger(),
-			discoverer: DiscovererFn(func(s sarama.ConsumerGroupSession, c sarama.ConsumerGroupClaim) (RunnableTarget, error) {
+			discoverer: DiscovererFn(func(_ sarama.ConsumerGroupSession, _ sarama.ConsumerGroupClaim) (RunnableTarget, error) {
 				return nil, nil
 			}),
-		},
-		cfg: scrapeconfig.Config{
-			JobName:        "foo",
-			RelabelConfigs: []*relabel.Config{},
-			KafkaConfig: &scrapeconfig.KafkaTargetConfig{
-				UseIncomingTimestamp: true,
-				Topics:               []string{"topic1", "topic2"},
-			},
 		},
 	}
 
 	ts.loop()
+	tmpTopics := []string{}
 	require.Eventually(t, func() bool {
 		if !group.consuming.Load() {
 			return false
 		}
+		group.mu.Lock()
+		defer group.mu.Unlock()
+		tmpTopics = group.topics
 		return reflect.DeepEqual([]string{"topic1"}, group.topics)
-	}, 200*time.Millisecond, time.Millisecond, "expected topics: %v, got: %v", []string{"topic1"}, group.topics)
+	}, 200*time.Millisecond, time.Millisecond, "expected topics: %v, got: %v", []string{"topic1"}, tmpTopics)
 
+	client.mu.Lock()
 	client.topics = []string{"topic1", "topic2"} // introduce new topics
+	client.mu.Unlock()
 
 	require.Eventually(t, func() bool {
 		if !group.consuming.Load() {
 			return false
 		}
+		tmpTopics = group.topics
 		return reflect.DeepEqual([]string{"topic1", "topic2"}, group.topics)
-	}, 200*time.Millisecond, time.Millisecond, "expected topics: %v, got: %v", []string{"topic1", "topic2"}, group.topics)
+	}, 200*time.Millisecond, time.Millisecond, "expected topics: %v, got: %v", []string{"topic1", "topic2"}, tmpTopics)
 
 	require.NoError(t, ts.Stop())
 	require.True(t, closed)
@@ -87,8 +85,8 @@ func Test_NewTarget(t *testing.T) {
 		logger: log.NewNopLogger(),
 		reg:    prometheus.DefaultRegisterer,
 		client: fake.New(func() {}),
-		cfg: scrapeconfig.Config{
-			JobName: "foo",
+		cfg: &TargetSyncerConfig{
+			GroupID: "group_1",
 			RelabelConfigs: []*relabel.Config{
 				{
 					SourceLabels: model.LabelNames{"__meta_kafka_topic"},
@@ -98,15 +96,11 @@ func Test_NewTarget(t *testing.T) {
 					Regex:        relabel.MustNewRegexp("(.*)"),
 				},
 			},
-			KafkaConfig: &scrapeconfig.KafkaTargetConfig{
-				UseIncomingTimestamp: true,
-				GroupID:              "group_1",
-				Topics:               []string{"topic1", "topic2"},
-				Labels:               model.LabelSet{"static": "static1"},
-			},
+			Labels: model.LabelSet{"static": "static1"},
 		},
 	}
-	pipeline, err := stages.NewPipeline(ts.logger, ts.cfg.PipelineStages, &ts.cfg.JobName, ts.reg)
+	jobName := "foo"
+	pipeline, err := stages.NewPipeline(ts.logger, nil, &jobName, ts.reg)
 	require.NoError(t, err)
 	ts.pipeline = pipeline
 	tg, err := ts.NewTarget(&testSession{}, newTestClaim("foo", 10, 1))
@@ -127,13 +121,8 @@ func Test_NewDroppedTarget(t *testing.T) {
 	ts := &TargetSyncer{
 		logger: log.NewNopLogger(),
 		reg:    prometheus.DefaultRegisterer,
-		cfg: scrapeconfig.Config{
-			JobName: "foo",
-			KafkaConfig: &scrapeconfig.KafkaTargetConfig{
-				UseIncomingTimestamp: true,
-				GroupID:              "group1",
-				Topics:               []string{"topic1", "topic2"},
-			},
+		cfg: &TargetSyncerConfig{
+			GroupID: "group1",
 		},
 	}
 	tg, err := ts.NewTarget(&testSession{}, newTestClaim("foo", 10, 1))
@@ -206,7 +195,6 @@ func Test_validateConfig(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		tt := tt
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			err := validateConfig(tt.cfg)
 			if (err != nil) != tt.wantErr {

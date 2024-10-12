@@ -22,7 +22,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -155,7 +155,7 @@ func getWebIdentityCredentials(clnt *http.Client, endpoint, roleARN, roleSession
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		var errResp ErrorResponse
-		buf, err := ioutil.ReadAll(resp.Body)
+		buf, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return AssumeRoleWithWebIdentityResponse{}, err
 		}
@@ -195,6 +195,7 @@ func (m *STSWebIdentity) Retrieve() (Value, error) {
 		AccessKeyID:     a.Result.Credentials.AccessKey,
 		SecretAccessKey: a.Result.Credentials.SecretKey,
 		SessionToken:    a.Result.Credentials.SessionToken,
+		Expiration:      a.Result.Credentials.Expiration,
 		SignerType:      SignatureV4,
 	}, nil
 }

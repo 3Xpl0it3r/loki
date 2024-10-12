@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	configv1 "github.com/grafana/loki/operator/apis/config/v1"
 	lokiv1 "github.com/grafana/loki/operator/apis/loki/v1"
@@ -28,8 +29,11 @@ type Options struct {
 	MaxConcurrent         MaxConcurrent
 	WriteAheadLog         WriteAheadLog
 	EnableRemoteReporting bool
+	Shippers              []string
 
 	ObjectStorage storage.Options
+
+	HTTPTimeouts HTTPTimeoutConfig
 
 	Retention RetentionOptions
 
@@ -37,7 +41,7 @@ type Options struct {
 }
 
 type LokiOverrides struct {
-	Limits lokiv1.LimitsTemplateSpec
+	Limits lokiv1.PerTenantLimitsTemplateSpec
 	Ruler  RulerOverrides
 }
 
@@ -57,6 +61,8 @@ type Address struct {
 
 // GossipRing defines the memberlist configuration
 type GossipRing struct {
+	// EnableIPv6 is optional, memberlist IPv6 support
+	EnableIPv6 bool
 	// InstanceAddr is optional, defaults to private networks
 	InstanceAddr string
 	// InstancePort is required
@@ -64,7 +70,15 @@ type GossipRing struct {
 	// BindPort is the port for listening to gossip messages
 	BindPort int
 	// MembersDiscoveryAddr is required
-	MembersDiscoveryAddr string
+	MembersDiscoveryAddr           string
+	EnableInstanceAvailabilityZone bool
+}
+
+// HTTPTimeoutConfig defines the HTTP server config options.
+type HTTPTimeoutConfig struct {
+	IdleTimeout  time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
 }
 
 // Ruler configuration
@@ -209,10 +223,20 @@ type WriteAheadLog struct {
 	IngesterMemoryRequest int64
 }
 
+const (
+	// minimumReplayCeiling contains the minimum value that will be used for the replay_memory_ceiling.
+	// It is set, so that even when the ingester has a low memory request, the replay will not flush each block
+	// on its own.
+	minimumReplayCeiling = 512 * 1024 * 1024
+)
+
 // ReplayMemoryCeiling calculates 50% of the ingester memory
 // for the ingester to use for the write-ahead-log capbability.
 func (w WriteAheadLog) ReplayMemoryCeiling() string {
 	value := int64(math.Ceil(float64(w.IngesterMemoryRequest) * float64(0.5)))
+	if value < minimumReplayCeiling {
+		value = minimumReplayCeiling
+	}
 	return fmt.Sprintf("%d", value)
 }
 

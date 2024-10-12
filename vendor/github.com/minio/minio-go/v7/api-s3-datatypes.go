@@ -85,6 +85,19 @@ type Version struct {
 	StorageClass string
 	VersionID    string `xml:"VersionId"`
 
+	// x-amz-meta-* headers stripped "x-amz-meta-" prefix containing the first value.
+	// Only returned by MinIO servers.
+	UserMetadata StringMap `json:"userMetadata,omitempty"`
+
+	// x-amz-tagging values in their k/v values.
+	// Only returned by MinIO servers.
+	UserTags URLMap `json:"userTags,omitempty" xml:"UserTags"`
+
+	Internal *struct {
+		K int // Data blocks
+		M int // Parity blocks
+	} `xml:"Internal"`
+
 	isDeleteMarker bool
 }
 
@@ -110,7 +123,7 @@ type ListVersionsResult struct {
 // UnmarshalXML is a custom unmarshal code for the response of ListObjectVersions, the custom
 // code will unmarshal <Version> and <DeleteMarker> tags and save them in Versions field to
 // preserve the lexical order of the listing.
-func (l *ListVersionsResult) UnmarshalXML(d *xml.Decoder, start xml.StartElement) (err error) {
+func (l *ListVersionsResult) UnmarshalXML(d *xml.Decoder, _ xml.StartElement) (err error) {
 	for {
 		// Read tokens from the XML document in a stream.
 		t, err := d.Token()
@@ -325,6 +338,22 @@ type CompletePart struct {
 	ChecksumCRC32C string `xml:"ChecksumCRC32C,omitempty"`
 	ChecksumSHA1   string `xml:"ChecksumSHA1,omitempty"`
 	ChecksumSHA256 string `xml:"ChecksumSHA256,omitempty"`
+}
+
+// Checksum will return the checksum for the given type.
+// Will return the empty string if not set.
+func (c CompletePart) Checksum(t ChecksumType) string {
+	switch {
+	case t.Is(ChecksumCRC32C):
+		return c.ChecksumCRC32C
+	case t.Is(ChecksumCRC32):
+		return c.ChecksumCRC32
+	case t.Is(ChecksumSHA1):
+		return c.ChecksumSHA1
+	case t.Is(ChecksumSHA256):
+		return c.ChecksumSHA256
+	}
+	return ""
 }
 
 // completeMultipartUpload container for completing multipart upload.

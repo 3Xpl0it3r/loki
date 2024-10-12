@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	logger "log"
+	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -13,11 +14,11 @@ import (
 	"github.com/prometheus/prometheus/model/labels"
 	promql_parser "github.com/prometheus/prometheus/promql/parser"
 
-	"github.com/grafana/loki/pkg/iter"
-	"github.com/grafana/loki/pkg/logproto"
-	"github.com/grafana/loki/pkg/logql/log"
-	"github.com/grafana/loki/pkg/logqlmodel"
-	"github.com/grafana/loki/pkg/querier/astmapper"
+	"github.com/grafana/loki/v3/pkg/iter"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/logql/log"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
+	"github.com/grafana/loki/v3/pkg/storage/stores/shipper/indexshipper/tsdb/index"
 )
 
 func NewMockQuerier(shards int, streams []logproto.Stream) MockQuerier {
@@ -33,7 +34,21 @@ type MockQuerier struct {
 	streams []logproto.Stream
 }
 
-func (q MockQuerier) SelectLogs(ctx context.Context, req SelectLogParams) (iter.EntryIterator, error) {
+func (q MockQuerier) extractOldShard(xs []string) (*index.ShardAnnotation, error) {
+	parsed, version, err := ParseShards(xs)
+	if err != nil {
+		return nil, err
+	}
+
+	if version != PowerOfTwoVersion {
+		return nil, fmt.Errorf("unsupported shard version: %d", version)
+	}
+
+	return parsed[0].PowerOfTwo, nil
+
+}
+
+func (q MockQuerier) SelectLogs(_ context.Context, req SelectLogParams) (iter.EntryIterator, error) {
 	expr, err := req.LogSelector()
 	if err != nil {
 		return nil, err
@@ -45,13 +60,12 @@ func (q MockQuerier) SelectLogs(ctx context.Context, req SelectLogParams) (iter.
 
 	matchers := expr.Matchers()
 
-	var shard *astmapper.ShardAnnotation
+	var shard *index.ShardAnnotation
 	if len(req.Shards) > 0 {
-		shards, err := ParseShards(req.Shards)
+		shard, err = q.extractOldShard(req.Shards)
 		if err != nil {
 			return nil, err
 		}
-		shard = &shards[0]
 	}
 
 	var matched []logproto.Stream
@@ -153,7 +167,7 @@ func processSeries(in []logproto.Stream, ex log.SampleExtractor) []logproto.Seri
 	return series
 }
 
-func (q MockQuerier) SelectSamples(ctx context.Context, req SelectSampleParams) (iter.SampleIterator, error) {
+func (q MockQuerier) SelectSamples(_ context.Context, req SelectSampleParams) (iter.SampleIterator, error) {
 	selector, err := req.LogSelector()
 	if err != nil {
 		return nil, err
@@ -171,13 +185,12 @@ func (q MockQuerier) SelectSamples(ctx context.Context, req SelectSampleParams) 
 
 	matchers := selector.Matchers()
 
-	var shard *astmapper.ShardAnnotation
+	var shard *index.ShardAnnotation
 	if len(req.Shards) > 0 {
-		shards, err := ParseShards(req.Shards)
+		shard, err = q.extractOldShard(req.Shards)
 		if err != nil {
 			return nil, err
 		}
-		shard = &shards[0]
 	}
 
 	var matched []logproto.Stream
@@ -214,32 +227,32 @@ type MockDownstreamer struct {
 
 func (m MockDownstreamer) Downstreamer(_ context.Context) Downstreamer { return m }
 
-func (m MockDownstreamer) Downstream(ctx context.Context, queries []DownstreamQuery) ([]logqlmodel.Result, error) {
+func (m MockDownstreamer) Downstream(ctx context.Context, queries []DownstreamQuery, _ Accumulator) ([]logqlmodel.Result, error) {
 	results := make([]logqlmodel.Result, 0, len(queries))
 	for _, query := range queries {
-		params := NewLiteralParams(
-			query.Expr.String(),
-			query.Params.Start(),
-			query.Params.End(),
-			query.Params.Step(),
-			query.Params.Interval(),
-			query.Params.Direction(),
-			query.Params.Limit(),
-			query.Shards.Encode(),
-		)
-		res, err := m.Query(params).Exec(ctx)
+		res, err := m.Query(query.Params).Exec(ctx)
 		if err != nil {
 			return nil, err
 		}
-
 		results = append(results, res)
+	}
+
+	if matrix, ok := results[0].Data.(ProbabilisticQuantileMatrix); ok {
+		if len(results) == 1 {
+			return results, nil
+		}
+		for _, m := range results[1:] {
+			matrix, _ = matrix.Merge(m.Data.(ProbabilisticQuantileMatrix))
+		}
+		return []logqlmodel.Result{{Data: matrix}}, nil
 	}
 	return results, nil
 }
 
 // create nStreams of nEntries with labelNames each where each label value
 // with the exception of the "index" label is modulo'd into a shard
-func randomStreams(nStreams, nEntries, nShards int, labelNames []string) (streams []logproto.Stream) {
+func randomStreams(nStreams, nEntries, nShards int, labelNames []string, valueField bool) (streams []logproto.Stream) {
+	r := rand.New(rand.NewSource(42))
 	for i := 0; i < nStreams; i++ {
 		// labels
 		stream := logproto.Stream{}
@@ -259,9 +272,14 @@ func randomStreams(nStreams, nEntries, nShards int, labelNames []string) (stream
 			})
 		}
 		for j := 0; j <= nEntries; j++ {
+			line := fmt.Sprintf("stream=stderr level=debug line=%d", j)
+			if valueField {
+				line = fmt.Sprintf("%s value=%f", line, r.Float64()*100.0)
+			}
+			nanos := r.Int63n(time.Second.Nanoseconds())
 			stream.Entries = append(stream.Entries, logproto.Entry{
-				Timestamp: time.Unix(0, int64(j*int(time.Second))),
-				Line:      fmt.Sprintf("stream=stderr level=debug line=%d", j),
+				Timestamp: time.Unix(0, int64(j*int(time.Second))+nanos),
+				Line:      line,
 			})
 		}
 

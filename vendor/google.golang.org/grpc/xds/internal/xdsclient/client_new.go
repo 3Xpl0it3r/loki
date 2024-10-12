@@ -26,9 +26,11 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/grpc/internal"
 	"google.golang.org/grpc/internal/cache"
 	"google.golang.org/grpc/internal/grpcsync"
-	"google.golang.org/grpc/xds/internal/xdsclient/bootstrap"
+	"google.golang.org/grpc/internal/xds/bootstrap"
+	"google.golang.org/grpc/xds/internal/xdsclient/xdsresource"
 )
 
 // New returns a new xDS client configured by the bootstrap file specified in env
@@ -37,20 +39,33 @@ import (
 // The returned client is a reference counted singleton instance. This function
 // creates a new client only when one doesn't already exist.
 //
-// Note that the first invocation of New() or NewWithConfig() sets the client
-// singleton. The following calls will return the singleton client without
-// checking or using the config.
-func New() (XDSClient, error) {
+// The second return value represents a close function which releases the
+// caller's reference on the returned client.  The caller is expected to invoke
+// it once they are done using the client. The underlying client will be closed
+// only when all references are released, and it is safe for the caller to
+// invoke this close function multiple times.
+func New() (XDSClient, func(), error) {
 	return newRefCountedWithConfig(nil)
 }
 
-// NewWithConfig returns a new xDS client configured by the given config.
+// NewWithConfig is similar to New, except that it uses the provided bootstrap
+// configuration to create the xDS client if and only if the bootstrap
+// environment variables are not defined.
 //
-// Internal/Testing Only
+// The returned client is a reference counted singleton instance. This function
+// creates a new client only when one doesn't already exist.
 //
-// This function should ONLY be used for internal (c2p resolver) and/or testing
-// purposese. DO NOT use this elsewhere. Use New() instead.
-func NewWithConfig(config *bootstrap.Config) (XDSClient, error) {
+// The second return value represents a close function which releases the
+// caller's reference on the returned client.  The caller is expected to invoke
+// it once they are done using the client. The underlying client will be closed
+// only when all references are released, and it is safe for the caller to
+// invoke this close function multiple times.
+//
+// # Internal Only
+//
+// This function should ONLY be used by the internal google-c2p resolver.
+// DO NOT use this elsewhere. Use New() instead.
+func NewWithConfig(config *bootstrap.Config) (XDSClient, func(), error) {
 	return newRefCountedWithConfig(config)
 }
 
@@ -61,7 +76,7 @@ func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration, i
 		done:               grpcsync.NewEvent(),
 		config:             config,
 		watchExpiryTimeout: watchExpiryTimeout,
-		serializer:         newCallbackSerializer(ctx),
+		serializer:         grpcsync.NewCallbackSerializer(ctx),
 		serializerClose:    cancel,
 		resourceTypes:      newResourceTypeRegistry(),
 		authorities:        make(map[string]*authority),
@@ -69,67 +84,98 @@ func newWithConfig(config *bootstrap.Config, watchExpiryTimeout time.Duration, i
 	}
 
 	c.logger = prefixLogger(c)
-	c.logger.Infof("Created ClientConn to xDS management server: %s", config.XDSServer)
-	c.logger.Infof("Created")
+	c.logger.Infof("Created client to xDS management server: %s", config.XDSServer)
 	return c, nil
 }
 
-// NewWithConfigForTesting returns an xDS client for the specified bootstrap
-// config, separate from the global singleton.
-//
-// # Testing Only
-//
-// This function should ONLY be used for testing purposes.
-func NewWithConfigForTesting(config *bootstrap.Config, watchExpiryTimeout, authorityIdleTimeout time.Duration) (XDSClient, error) {
-	cl, err := newWithConfig(config, watchExpiryTimeout, authorityIdleTimeout)
-	if err != nil {
-		return nil, err
-	}
-	return &clientRefCounted{clientImpl: cl, refCount: 1}, nil
+// OptionsForTesting contains options to configure xDS client creation for
+// testing purposes only.
+type OptionsForTesting struct {
+	// Contents contain a JSON representation of the bootstrap configuration to
+	// be used when creating the xDS client.
+	Contents []byte
+
+	// WatchExpiryTimeout is the timeout for xDS resource watch expiry. If
+	// unspecified, uses the default value used in non-test code.
+	WatchExpiryTimeout time.Duration
+
+	// AuthorityIdleTimeout is the timeout before idle authorities are deleted.
+	// If unspecified, uses the default value used in non-test code.
+	AuthorityIdleTimeout time.Duration
 }
 
-// NewWithBootstrapContentsForTesting returns an xDS client for this config,
-// separate from the global singleton.
+// NewForTesting returns an xDS client configured with the provided options.
+//
+// The second return value represents a close function which the caller is
+// expected to invoke once they are done using the client.  It is safe for the
+// caller to invoke this close function multiple times.
 //
 // # Testing Only
 //
 // This function should ONLY be used for testing purposes.
-func NewWithBootstrapContentsForTesting(contents []byte) (XDSClient, error) {
-	// Normalize the contents
-	buf := bytes.Buffer{}
-	err := json.Indent(&buf, contents, "", "")
-	if err != nil {
-		return nil, fmt.Errorf("xds: error normalizing JSON: %v", err)
+func NewForTesting(opts OptionsForTesting) (XDSClient, func(), error) {
+	if opts.WatchExpiryTimeout == 0 {
+		opts.WatchExpiryTimeout = defaultWatchExpiryTimeout
 	}
-	contents = bytes.TrimSpace(buf.Bytes())
+	if opts.AuthorityIdleTimeout == 0 {
+		opts.AuthorityIdleTimeout = defaultIdleAuthorityDeleteTimeout
+	}
+
+	// Normalize the input configuration, as this is used as the key in the map
+	// of xDS clients created for testing.
+	buf := bytes.Buffer{}
+	err := json.Indent(&buf, opts.Contents, "", "")
+	if err != nil {
+		return nil, nil, fmt.Errorf("xds: error normalizing JSON: %v", err)
+	}
+	opts.Contents = bytes.TrimSpace(buf.Bytes())
 
 	clientsMu.Lock()
 	defer clientsMu.Unlock()
-	if c := clients[string(contents)]; c != nil {
-		c.mu.Lock()
-		// Since we don't remove the *Client from the map when it is closed, we
-		// need to recreate the impl if the ref count dropped to zero.
-		if c.refCount > 0 {
-			c.refCount++
-			c.mu.Unlock()
-			return c, nil
+
+	var client *clientRefCounted
+	closeFunc := grpcsync.OnceFunc(func() {
+		clientsMu.Lock()
+		defer clientsMu.Unlock()
+		if client.decrRef() == 0 {
+			client.close()
+			delete(clients, string(opts.Contents))
 		}
-		c.mu.Unlock()
+	})
+
+	// If an xDS client exists for the given configuration, increment its
+	// reference count and return it.
+	if c := clients[string(opts.Contents)]; c != nil {
+		c.incrRef()
+		client = c
+		return c, closeFunc, nil
 	}
 
-	bcfg, err := bootstrap.NewConfigFromContentsForTesting(contents)
+	// Create a new xDS client for the given configuration
+	bcfg, err := bootstrap.NewConfigFromContents(opts.Contents)
 	if err != nil {
-		return nil, fmt.Errorf("xds: error with bootstrap config: %v", err)
+		return nil, nil, fmt.Errorf("bootstrap config %s: %v", string(opts.Contents), err)
 	}
-
-	cImpl, err := newWithConfig(bcfg, defaultWatchExpiryTimeout, defaultIdleAuthorityDeleteTimeout)
+	cImpl, err := newWithConfig(bcfg, opts.WatchExpiryTimeout, opts.AuthorityIdleTimeout)
 	if err != nil {
-		return nil, err
+		return nil, nil, fmt.Errorf("creating xDS client: %v", err)
 	}
+	client = &clientRefCounted{clientImpl: cImpl, refCount: 1}
+	clients[string(opts.Contents)] = client
 
-	c := &clientRefCounted{clientImpl: cImpl, refCount: 1}
-	clients[string(contents)] = c
-	return c, nil
+	return client, closeFunc, nil
+}
+
+func init() {
+	internal.TriggerXDSResourceNotFoundForTesting = triggerXDSResourceNotFoundForTesting
+}
+
+func triggerXDSResourceNotFoundForTesting(client XDSClient, typ xdsresource.Type, name string) error {
+	crc, ok := client.(*clientRefCounted)
+	if !ok {
+		return fmt.Errorf("xDS client is of type %T, want %T", client, &clientRefCounted{})
+	}
+	return crc.clientImpl.triggerResourceNotFoundForTesting(typ, name)
 }
 
 var (

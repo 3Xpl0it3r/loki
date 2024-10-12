@@ -12,7 +12,7 @@ import (
 	"github.com/mitchellh/mapstructure"
 	"github.com/prometheus/common/model"
 
-	"github.com/grafana/loki/pkg/util"
+	"github.com/grafana/loki/v3/pkg/util"
 )
 
 const (
@@ -147,7 +147,7 @@ func (ts *timestampStage) Name() string {
 }
 
 // Process implements Stage
-func (ts *timestampStage) Process(labels model.LabelSet, extracted map[string]interface{}, t *time.Time, entry *string) {
+func (ts *timestampStage) Process(labels model.LabelSet, extracted map[string]interface{}, t *time.Time, _ *string) {
 	if ts.cfg == nil {
 		return
 	}

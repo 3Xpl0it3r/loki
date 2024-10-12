@@ -29,7 +29,8 @@ import (
 
 // DefaultConfig for Azure objstore client.
 var DefaultConfig = Config{
-	Endpoint: "blob.core.windows.net",
+	Endpoint:               "blob.core.windows.net",
+	StorageCreateContainer: true,
 	HTTPConfig: exthttp.HTTPConfig{
 		IdleConnTimeout:       model.Duration(90 * time.Second),
 		ResponseHeaderTimeout: model.Duration(2 * time.Minute),
@@ -44,15 +45,17 @@ var DefaultConfig = Config{
 
 // Config Azure storage configuration.
 type Config struct {
-	StorageAccountName string             `yaml:"storage_account"`
-	StorageAccountKey  string             `yaml:"storage_account_key"`
-	ContainerName      string             `yaml:"container"`
-	Endpoint           string             `yaml:"endpoint"`
-	UserAssignedID     string             `yaml:"user_assigned_id"`
-	MaxRetries         int                `yaml:"max_retries"`
-	ReaderConfig       ReaderConfig       `yaml:"reader_config"`
-	PipelineConfig     PipelineConfig     `yaml:"pipeline_config"`
-	HTTPConfig         exthttp.HTTPConfig `yaml:"http_config"`
+	StorageAccountName      string             `yaml:"storage_account"`
+	StorageAccountKey       string             `yaml:"storage_account_key"`
+	StorageConnectionString string             `yaml:"storage_connection_string"`
+	StorageCreateContainer  bool               `yaml:"storage_create_container"`
+	ContainerName           string             `yaml:"container"`
+	Endpoint                string             `yaml:"endpoint"`
+	UserAssignedID          string             `yaml:"user_assigned_id"`
+	MaxRetries              int                `yaml:"max_retries"`
+	ReaderConfig            ReaderConfig       `yaml:"reader_config"`
+	PipelineConfig          PipelineConfig     `yaml:"pipeline_config"`
+	HTTPConfig              exthttp.HTTPConfig `yaml:"http_config"`
 
 	// Deprecated: Is automatically set by the Azure SDK.
 	MSIResource string `yaml:"msi_resource"`
@@ -74,6 +77,14 @@ func (conf *Config) validate() error {
 	var errMsg []string
 	if conf.UserAssignedID != "" && conf.StorageAccountKey != "" {
 		errMsg = append(errMsg, "user_assigned_id cannot be set when using storage_account_key authentication")
+	}
+
+	if conf.UserAssignedID != "" && conf.StorageConnectionString != "" {
+		errMsg = append(errMsg, "user_assigned_id cannot be set when using storage_connection_string authentication")
+	}
+
+	if conf.StorageAccountKey != "" && conf.StorageConnectionString != "" {
+		errMsg = append(errMsg, "storage_account_key and storage_connection_string cannot both be set")
 	}
 
 	if conf.StorageAccountName == "" {
@@ -158,19 +169,20 @@ func NewBucketWithConfig(logger log.Logger, conf Config, component string) (*Buc
 	}
 
 	// Check if storage account container already exists, and create one if it does not.
-	ctx := context.Background()
-	_, err = containerClient.GetProperties(ctx, &container.GetPropertiesOptions{})
-	if err != nil {
-		if !bloberror.HasCode(err, bloberror.ContainerNotFound) {
-			return nil, err
-		}
-		_, err := containerClient.Create(ctx, nil)
+	if conf.StorageCreateContainer {
+		ctx := context.Background()
+		_, err = containerClient.GetProperties(ctx, &container.GetPropertiesOptions{})
 		if err != nil {
-			return nil, errors.Wrapf(err, "error creating Azure blob container: %s", conf.ContainerName)
+			if !bloberror.HasCode(err, bloberror.ContainerNotFound) {
+				return nil, err
+			}
+			_, err := containerClient.Create(ctx, nil)
+			if err != nil {
+				return nil, errors.Wrapf(err, "error creating Azure blob container: %s", conf.ContainerName)
+			}
+			level.Info(logger).Log("msg", "Azure blob container successfully created", "address", conf.ContainerName)
 		}
-		level.Info(logger).Log("msg", "Azure blob container successfully created", "address", conf.ContainerName)
 	}
-
 	bkt := &Bucket{
 		logger:           logger,
 		containerClient:  containerClient,
@@ -233,6 +245,14 @@ func (b *Bucket) IsObjNotFoundErr(err error) bool {
 		return false
 	}
 	return bloberror.HasCode(err, bloberror.BlobNotFound) || bloberror.HasCode(err, bloberror.InvalidURI)
+}
+
+// IsAccessDeniedErr returns true if access to object is denied.
+func (b *Bucket) IsAccessDeniedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return bloberror.HasCode(err, bloberror.AuthorizationPermissionMismatch) || bloberror.HasCode(err, bloberror.InsufficientAccountPermissions)
 }
 
 func (b *Bucket) getBlobReader(ctx context.Context, name string, httpRange blob.HTTPRange) (io.ReadCloser, error) {

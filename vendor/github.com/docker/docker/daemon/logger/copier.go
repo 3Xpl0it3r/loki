@@ -2,13 +2,14 @@ package logger // import "github.com/docker/docker/daemon/logger"
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/containerd/log"
 	types "github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -87,7 +88,7 @@ func (c *Copier) copySrc(name string, src io.Reader) {
 				if err != nil {
 					if err != io.EOF {
 						logReadsFailedCount.Inc(1)
-						logrus.Errorf("Error scanning log stream: %s", err)
+						log.G(context.TODO()).Errorf("Error scanning log stream: %s", err)
 						return
 					}
 					eof = true
@@ -126,8 +127,7 @@ func (c *Copier) copySrc(name string, src io.Reader) {
 					}
 
 					if logErr := c.dst.Log(msg); logErr != nil {
-						logWritesFailedCount.Inc(1)
-						logrus.Errorf("Failed to log msg %q for logger %s: %s", msg.Line, c.dst.Name(), logErr)
+						logDriverError(c.dst.Name(), string(msg.Line), logErr)
 					}
 				}
 				p += q + 1
@@ -159,8 +159,7 @@ func (c *Copier) copySrc(name string, src io.Reader) {
 					hasMorePartial = true
 
 					if logErr := c.dst.Log(msg); logErr != nil {
-						logWritesFailedCount.Inc(1)
-						logrus.Errorf("Failed to log msg %q for logger %s: %s", msg.Line, c.dst.Name(), logErr)
+						logDriverError(c.dst.Name(), string(msg.Line), logErr)
 					}
 					p = 0
 					n = 0

@@ -7,7 +7,7 @@ import (
 	"github.com/grafana/loki/operator/apis/loki/v1beta1"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 )
 
 func TestConvertToV1_RulerConfig(t *testing.T) {
@@ -79,19 +79,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 						},
 						Client: &v1beta1.AlertManagerClientConfig{
 							TLS: &v1beta1.AlertManagerClientTLSConfig{
-								CAPath:     pointer.String("/tls/ca/path"),
-								ServerName: pointer.String("server"),
-								CertPath:   pointer.String("/tls/cert/path"),
-								KeyPath:    pointer.String("/tls/key/path"),
+								CAPath:     ptr.To("/tls/ca/path"),
+								ServerName: ptr.To("server"),
+								CertPath:   ptr.To("/tls/cert/path"),
+								KeyPath:    ptr.To("/tls/key/path"),
 							},
 							HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-								Type:            pointer.String("type"),
-								Credentials:     pointer.String("creds"),
-								CredentialsFile: pointer.String("creds-file"),
+								Type:            ptr.To("type"),
+								Credentials:     ptr.To("creds"),
+								CredentialsFile: ptr.To("creds-file"),
 							},
 							BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-								Username: pointer.String("user"),
-								Password: pointer.String("pass"),
+								Username: ptr.To("user"),
+								Password: ptr.To("pass"),
 							},
 						},
 					},
@@ -175,19 +175,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1beta1.AlertManagerClientConfig{
 									TLS: &v1beta1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -234,19 +234,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1beta1.AlertManagerClientConfig{
 									TLS: &v1beta1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -322,19 +322,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 						},
 						Client: &v1.AlertManagerClientConfig{
 							TLS: &v1.AlertManagerClientTLSConfig{
-								CAPath:     pointer.String("/tls/ca/path"),
-								ServerName: pointer.String("server"),
-								CertPath:   pointer.String("/tls/cert/path"),
-								KeyPath:    pointer.String("/tls/key/path"),
+								CAPath:     ptr.To("/tls/ca/path"),
+								ServerName: ptr.To("server"),
+								CertPath:   ptr.To("/tls/cert/path"),
+								KeyPath:    ptr.To("/tls/key/path"),
 							},
 							HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-								Type:            pointer.String("type"),
-								Credentials:     pointer.String("creds"),
-								CredentialsFile: pointer.String("creds-file"),
+								Type:            ptr.To("type"),
+								Credentials:     ptr.To("creds"),
+								CredentialsFile: ptr.To("creds-file"),
 							},
 							BasicAuth: &v1.AlertManagerClientBasicAuth{
-								Username: pointer.String("user"),
-								Password: pointer.String("pass"),
+								Username: ptr.To("user"),
+								Password: ptr.To("pass"),
 							},
 						},
 					},
@@ -418,19 +418,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1.AlertManagerClientConfig{
 									TLS: &v1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -477,19 +477,19 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1.AlertManagerClientConfig{
 									TLS: &v1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -513,7 +513,6 @@ func TestConvertToV1_RulerConfig(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 			dst := v1.RulerConfig{}
@@ -593,19 +592,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 						},
 						Client: &v1.AlertManagerClientConfig{
 							TLS: &v1.AlertManagerClientTLSConfig{
-								CAPath:     pointer.String("/tls/ca/path"),
-								ServerName: pointer.String("server"),
-								CertPath:   pointer.String("/tls/cert/path"),
-								KeyPath:    pointer.String("/tls/key/path"),
+								CAPath:     ptr.To("/tls/ca/path"),
+								ServerName: ptr.To("server"),
+								CertPath:   ptr.To("/tls/cert/path"),
+								KeyPath:    ptr.To("/tls/key/path"),
 							},
 							HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-								Type:            pointer.String("type"),
-								Credentials:     pointer.String("creds"),
-								CredentialsFile: pointer.String("creds-file"),
+								Type:            ptr.To("type"),
+								Credentials:     ptr.To("creds"),
+								CredentialsFile: ptr.To("creds-file"),
 							},
 							BasicAuth: &v1.AlertManagerClientBasicAuth{
-								Username: pointer.String("user"),
-								Password: pointer.String("pass"),
+								Username: ptr.To("user"),
+								Password: ptr.To("pass"),
 							},
 						},
 					},
@@ -689,19 +688,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1.AlertManagerClientConfig{
 									TLS: &v1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -748,19 +747,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1.AlertManagerClientConfig{
 									TLS: &v1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -836,19 +835,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 						},
 						Client: &v1beta1.AlertManagerClientConfig{
 							TLS: &v1beta1.AlertManagerClientTLSConfig{
-								CAPath:     pointer.String("/tls/ca/path"),
-								ServerName: pointer.String("server"),
-								CertPath:   pointer.String("/tls/cert/path"),
-								KeyPath:    pointer.String("/tls/key/path"),
+								CAPath:     ptr.To("/tls/ca/path"),
+								ServerName: ptr.To("server"),
+								CertPath:   ptr.To("/tls/cert/path"),
+								KeyPath:    ptr.To("/tls/key/path"),
 							},
 							HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-								Type:            pointer.String("type"),
-								Credentials:     pointer.String("creds"),
-								CredentialsFile: pointer.String("creds-file"),
+								Type:            ptr.To("type"),
+								Credentials:     ptr.To("creds"),
+								CredentialsFile: ptr.To("creds-file"),
 							},
 							BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-								Username: pointer.String("user"),
-								Password: pointer.String("pass"),
+								Username: ptr.To("user"),
+								Password: ptr.To("pass"),
 							},
 						},
 					},
@@ -932,19 +931,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1beta1.AlertManagerClientConfig{
 									TLS: &v1beta1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -991,19 +990,19 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 								},
 								Client: &v1beta1.AlertManagerClientConfig{
 									TLS: &v1beta1.AlertManagerClientTLSConfig{
-										CAPath:     pointer.String("/tls/ca/path-1"),
-										ServerName: pointer.String("server-1"),
-										CertPath:   pointer.String("/tls/cert/path-1"),
-										KeyPath:    pointer.String("/tls/key/path-1"),
+										CAPath:     ptr.To("/tls/ca/path-1"),
+										ServerName: ptr.To("server-1"),
+										CertPath:   ptr.To("/tls/cert/path-1"),
+										KeyPath:    ptr.To("/tls/key/path-1"),
 									},
 									HeaderAuth: &v1beta1.AlertManagerClientHeaderAuth{
-										Type:            pointer.String("type-1"),
-										Credentials:     pointer.String("creds-1"),
-										CredentialsFile: pointer.String("creds-file-1"),
+										Type:            ptr.To("type-1"),
+										Credentials:     ptr.To("creds-1"),
+										CredentialsFile: ptr.To("creds-file-1"),
 									},
 									BasicAuth: &v1beta1.AlertManagerClientBasicAuth{
-										Username: pointer.String("user-1"),
-										Password: pointer.String("pass-1"),
+										Username: ptr.To("user-1"),
+										Password: ptr.To("pass-1"),
 									},
 								},
 							},
@@ -1027,7 +1026,6 @@ func TestConvertFromV1_RulerConfig(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 			dst := v1beta1.RulerConfig{}

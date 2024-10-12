@@ -6,15 +6,17 @@ import (
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/dskit/netutil"
 
-	"github.com/grafana/loki/pkg/storage/chunk/client/alibaba"
-	"github.com/grafana/loki/pkg/storage/chunk/client/aws"
-	"github.com/grafana/loki/pkg/storage/chunk/client/azure"
-	"github.com/grafana/loki/pkg/storage/chunk/client/baidubce"
-	"github.com/grafana/loki/pkg/storage/chunk/client/gcp"
-	"github.com/grafana/loki/pkg/storage/chunk/client/hedging"
-	"github.com/grafana/loki/pkg/storage/chunk/client/openstack"
-	"github.com/grafana/loki/pkg/util"
-	util_log "github.com/grafana/loki/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/alibaba"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/aws"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/azure"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/baidubce"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/congestion"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/gcp"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/hedging"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/ibmcloud"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/openstack"
+	util_log "github.com/grafana/loki/v3/pkg/util/log"
+	"github.com/grafana/loki/v3/pkg/util/ring"
 )
 
 // Config holds common config that can be shared between multiple other config sections.
@@ -25,7 +27,7 @@ type Config struct {
 	Storage           Storage         `yaml:"storage"`
 	PersistTokens     bool            `yaml:"persist_tokens"`
 	ReplicationFactor int             `yaml:"replication_factor"`
-	Ring              util.RingConfig `yaml:"ring"`
+	Ring              ring.RingConfig `yaml:"ring"`
 
 	// InstanceInterfaceNames represents a common list of net interfaces used to look for host addresses.
 	//
@@ -66,14 +68,16 @@ func (c *Config) RegisterFlags(f *flag.FlagSet) {
 }
 
 type Storage struct {
-	S3           aws.S3Config              `yaml:"s3"`
-	GCS          gcp.GCSConfig             `yaml:"gcs"`
-	Azure        azure.BlobStorageConfig   `yaml:"azure"`
-	AlibabaCloud alibaba.OssConfig         `yaml:"alibabacloud"`
-	BOS          baidubce.BOSStorageConfig `yaml:"bos"`
-	Swift        openstack.SwiftConfig     `yaml:"swift"`
-	FSConfig     FilesystemConfig          `yaml:"filesystem"`
-	Hedging      hedging.Config            `yaml:"hedging"`
+	S3                aws.S3Config              `yaml:"s3"`
+	GCS               gcp.GCSConfig             `yaml:"gcs"`
+	Azure             azure.BlobStorageConfig   `yaml:"azure"`
+	AlibabaCloud      alibaba.OssConfig         `yaml:"alibabacloud"`
+	BOS               baidubce.BOSStorageConfig `yaml:"bos"`
+	Swift             openstack.SwiftConfig     `yaml:"swift"`
+	FSConfig          FilesystemConfig          `yaml:"filesystem"`
+	Hedging           hedging.Config            `yaml:"hedging"`
+	COS               ibmcloud.COSConfig        `yaml:"cos"`
+	CongestionControl congestion.Config         `yaml:"congestion_control,omitempty"`
 }
 
 func (s *Storage) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
@@ -85,6 +89,8 @@ func (s *Storage) RegisterFlagsWithPrefix(prefix string, f *flag.FlagSet) {
 	s.BOS.RegisterFlagsWithPrefix(prefix, f)
 	s.FSConfig.RegisterFlagsWithPrefix(prefix, f)
 	s.Hedging.RegisterFlagsWithPrefix(prefix, f)
+	s.COS.RegisterFlagsWithPrefix(prefix, f)
+	s.CongestionControl.RegisterFlagsWithPrefix(prefix, f)
 }
 
 type FilesystemConfig struct {

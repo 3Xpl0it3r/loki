@@ -4,11 +4,11 @@ import (
 	"context"
 	"testing"
 
-	lokiv1 "github.com/grafana/loki/operator/apis/loki/v1"
-
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	lokiv1 "github.com/grafana/loki/operator/apis/loki/v1"
 )
 
 func TestAlertingRuleValidator(t *testing.T) {
@@ -107,9 +107,118 @@ func TestAlertingRuleValidator(t *testing.T) {
 			wantErrors: []*field.Error{
 				{
 					Type:     field.ErrorTypeInvalid,
-					Field:    "Spec.TenantID",
+					Field:    "spec.tenantID",
 					BadValue: "application",
 					Detail:   `AlertingRule does not use correct tenant ["infrastructure"]`,
+				},
+			},
+		},
+		{
+			desc: "custom tenant topology enabled",
+			spec: &lokiv1.AlertingRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "alerting-rule",
+					Namespace: "openshift-example",
+					Annotations: map[string]string{
+						lokiv1.AnnotationDisableTenantValidation: "true",
+					},
+				},
+				Spec: lokiv1.AlertingRuleSpec{
+					TenantID: "foobar",
+					Groups: []*lokiv1.AlertingRuleGroup{
+						{
+							Rules: []*lokiv1.AlertingRuleGroupSpec{
+								{
+									Expr: `sum(rate({kubernetes_namespace_name="openshift-example", level="error"}[5m])) by (job) > 0.1`,
+									Labels: map[string]string{
+										severityLabelName: "warning",
+									},
+									Annotations: map[string]string{
+										summaryAnnotationName:     "alert summary",
+										descriptionAnnotationName: "alert description",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			desc: "custom tenant topology disabled",
+			spec: &lokiv1.AlertingRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "alerting-rule",
+					Namespace: "openshift-example",
+					Annotations: map[string]string{
+						lokiv1.AnnotationDisableTenantValidation: "false",
+					},
+				},
+				Spec: lokiv1.AlertingRuleSpec{
+					TenantID: "foobar",
+					Groups: []*lokiv1.AlertingRuleGroup{
+						{
+							Rules: []*lokiv1.AlertingRuleGroupSpec{
+								{
+									Expr: `sum(rate({kubernetes_namespace_name="openshift-example", level="error"}[5m])) by (job) > 0.1`,
+									Labels: map[string]string{
+										severityLabelName: "warning",
+									},
+									Annotations: map[string]string{
+										summaryAnnotationName:     "alert summary",
+										descriptionAnnotationName: "alert description",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErrors: []*field.Error{
+				{
+					Type:     field.ErrorTypeInvalid,
+					Field:    "spec.tenantID",
+					BadValue: "foobar",
+					Detail:   `AlertingRule does not use correct tenant ["infrastructure"]`,
+				},
+			},
+		},
+		{
+			desc: "wrong tenant topology",
+			spec: &lokiv1.AlertingRule{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "alerting-rule",
+					Namespace: "openshift-example",
+					Annotations: map[string]string{
+						lokiv1.AnnotationDisableTenantValidation: "not-valid",
+					},
+				},
+				Spec: lokiv1.AlertingRuleSpec{
+					TenantID: "foobar",
+					Groups: []*lokiv1.AlertingRuleGroup{
+						{
+							Rules: []*lokiv1.AlertingRuleGroupSpec{
+								{
+									Expr: `sum(rate({kubernetes_namespace_name="openshift-example", level="error"}[5m])) by (job) > 0.1`,
+									Labels: map[string]string{
+										severityLabelName: "warning",
+									},
+									Annotations: map[string]string{
+										summaryAnnotationName:     "alert summary",
+										descriptionAnnotationName: "alert description",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErrors: []*field.Error{
+				{
+					Type:     field.ErrorTypeInvalid,
+					Field:    `metadata.annotations[loki.grafana.com/disable-tenant-validation]`,
+					BadValue: "not-valid",
+					Detail:   `strconv.ParseBool: parsing "not-valid": invalid syntax`,
 				},
 			},
 		},
@@ -143,7 +252,7 @@ func TestAlertingRuleValidator(t *testing.T) {
 			wantErrors: []*field.Error{
 				{
 					Type:     field.ErrorTypeInvalid,
-					Field:    "Spec.Groups[0].Rules[0].Expr",
+					Field:    "spec.groups[0].rules[0].expr",
 					BadValue: "invalid",
 					Detail:   lokiv1.ErrParseLogQLExpression.Error(),
 				},
@@ -179,7 +288,7 @@ func TestAlertingRuleValidator(t *testing.T) {
 			wantErrors: []*field.Error{
 				{
 					Type:     field.ErrorTypeInvalid,
-					Field:    "Spec.Groups[0].Rules[0].Expr",
+					Field:    "spec.groups[0].rules[0].expr",
 					BadValue: `{kubernetes_namespace_name="example", level="error"}`,
 					Detail:   lokiv1.ErrParseLogQLNotSample.Error(),
 				},
@@ -215,7 +324,7 @@ func TestAlertingRuleValidator(t *testing.T) {
 			wantErrors: []*field.Error{
 				{
 					Type:     field.ErrorTypeInvalid,
-					Field:    "Spec.Groups[0].Rules[0].Expr",
+					Field:    "spec.groups[0].rules[0].expr",
 					BadValue: `sum(rate({level="error"}[5m])) by (job) > 0.1`,
 					Detail:   lokiv1.ErrRuleMustMatchNamespace.Error(),
 				},
@@ -251,7 +360,7 @@ func TestAlertingRuleValidator(t *testing.T) {
 			wantErrors: []*field.Error{
 				{
 					Type:     field.ErrorTypeInvalid,
-					Field:    "Spec.Groups[0].Rules[0].Expr",
+					Field:    "spec.groups[0].rules[0].expr",
 					BadValue: `sum(rate({kubernetes_namespace_name="other-ns", level="error"}[5m])) by (job) > 0.1`,
 					Detail:   lokiv1.ErrRuleMustMatchNamespace.Error(),
 				},
@@ -405,7 +514,6 @@ func TestAlertingRuleValidator(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 

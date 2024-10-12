@@ -3,11 +3,12 @@ package v1beta1_test
 import (
 	"testing"
 
-	v1 "github.com/grafana/loki/operator/apis/loki/v1"
-	"github.com/grafana/loki/operator/apis/loki/v1beta1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	v1 "github.com/grafana/loki/operator/apis/loki/v1"
+	"github.com/grafana/loki/operator/apis/loki/v1beta1"
 )
 
 func TestConvertToV1_LokiStack(t *testing.T) {
@@ -351,7 +352,9 @@ func TestConvertToV1_LokiStack(t *testing.T) {
 							Name: "test",
 						},
 						TLS: &v1.ObjectStorageTLSSpec{
-							CA: "test-ca",
+							CASpec: v1.CASpec{
+								CA: "test-ca",
+							},
 						},
 					},
 					StorageClassName:  "standard",
@@ -386,7 +389,7 @@ func TestConvertToV1_LokiStack(t *testing.T) {
 								MaxQuerySeries:          10000,
 							},
 						},
-						Tenants: map[string]v1.LimitsTemplateSpec{
+						Tenants: map[string]v1.PerTenantLimitsTemplateSpec{
 							"tenant-a": {
 								IngestionLimits: &v1.IngestionLimitSpec{
 									IngestionRate:             100,
@@ -397,10 +400,12 @@ func TestConvertToV1_LokiStack(t *testing.T) {
 									MaxGlobalStreamsPerTenant: 10000,
 									MaxLineSize:               512,
 								},
-								QueryLimits: &v1.QueryLimitSpec{
-									MaxEntriesLimitPerQuery: 1000,
-									MaxChunksPerQuery:       1000,
-									MaxQuerySeries:          10000,
+								QueryLimits: &v1.PerTenantQueryLimitSpec{
+									QueryLimitSpec: v1.QueryLimitSpec{
+										MaxEntriesLimitPerQuery: 1000,
+										MaxChunksPerQuery:       1000,
+										MaxQuerySeries:          10000,
+									},
 								},
 							},
 							"tenant-b": {
@@ -413,10 +418,12 @@ func TestConvertToV1_LokiStack(t *testing.T) {
 									MaxGlobalStreamsPerTenant: 10000,
 									MaxLineSize:               512,
 								},
-								QueryLimits: &v1.QueryLimitSpec{
-									MaxEntriesLimitPerQuery: 1000,
-									MaxChunksPerQuery:       1000,
-									MaxQuerySeries:          10000,
+								QueryLimits: &v1.PerTenantQueryLimitSpec{
+									QueryLimitSpec: v1.QueryLimitSpec{
+										MaxEntriesLimitPerQuery: 1000,
+										MaxChunksPerQuery:       1000,
+										MaxQuerySeries:          10000,
+									},
 								},
 							},
 						},
@@ -621,7 +628,6 @@ func TestConvertToV1_LokiStack(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 			dst := v1.LokiStack{}
@@ -676,7 +682,9 @@ func TestConvertFromV1_LokiStack(t *testing.T) {
 							Name: "test",
 						},
 						TLS: &v1.ObjectStorageTLSSpec{
-							CA: "test-ca",
+							CASpec: v1.CASpec{
+								CA: "test-ca",
+							},
 						},
 					},
 					StorageClassName:  "standard",
@@ -711,7 +719,7 @@ func TestConvertFromV1_LokiStack(t *testing.T) {
 								MaxQuerySeries:          10000,
 							},
 						},
-						Tenants: map[string]v1.LimitsTemplateSpec{
+						Tenants: map[string]v1.PerTenantLimitsTemplateSpec{
 							"tenant-a": {
 								IngestionLimits: &v1.IngestionLimitSpec{
 									IngestionRate:             100,
@@ -722,10 +730,12 @@ func TestConvertFromV1_LokiStack(t *testing.T) {
 									MaxGlobalStreamsPerTenant: 10000,
 									MaxLineSize:               512,
 								},
-								QueryLimits: &v1.QueryLimitSpec{
-									MaxEntriesLimitPerQuery: 1000,
-									MaxChunksPerQuery:       1000,
-									MaxQuerySeries:          10000,
+								QueryLimits: &v1.PerTenantQueryLimitSpec{
+									QueryLimitSpec: v1.QueryLimitSpec{
+										MaxEntriesLimitPerQuery: 1000,
+										MaxChunksPerQuery:       1000,
+										MaxQuerySeries:          10000,
+									},
 								},
 							},
 							"tenant-b": {
@@ -738,10 +748,12 @@ func TestConvertFromV1_LokiStack(t *testing.T) {
 									MaxGlobalStreamsPerTenant: 10000,
 									MaxLineSize:               512,
 								},
-								QueryLimits: &v1.QueryLimitSpec{
-									MaxEntriesLimitPerQuery: 1000,
-									MaxChunksPerQuery:       1000,
-									MaxQuerySeries:          10000,
+								QueryLimits: &v1.PerTenantQueryLimitSpec{
+									QueryLimitSpec: v1.QueryLimitSpec{
+										MaxEntriesLimitPerQuery: 1000,
+										MaxChunksPerQuery:       1000,
+										MaxQuerySeries:          10000,
+									},
 								},
 							},
 						},
@@ -1243,7 +1255,6 @@ func TestConvertFromV1_LokiStack(t *testing.T) {
 	}
 
 	for _, tc := range tt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 

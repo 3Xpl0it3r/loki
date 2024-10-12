@@ -9,7 +9,7 @@ import (
 	"github.com/thanos-io/objstore"
 	thanos_s3 "github.com/thanos-io/objstore/providers/s3"
 
-	"github.com/grafana/loki/pkg/storage/bucket/s3"
+	"github.com/grafana/loki/v3/pkg/storage/bucket/s3"
 )
 
 // TenantConfigProvider defines a per-tenant config provider.
@@ -127,6 +127,11 @@ func (b *SSEBucketClient) Attributes(ctx context.Context, name string) (objstore
 // ReaderWithExpectedErrs implements objstore.Bucket.
 func (b *SSEBucketClient) ReaderWithExpectedErrs(fn objstore.IsOpFailureExpectedFunc) objstore.BucketReader {
 	return b.WithExpectedErrs(fn)
+}
+
+// IsAccessDeniedErr returns true if access to object is denied.
+func (b *SSEBucketClient) IsAccessDeniedErr(err error) bool {
+	return b.bucket.IsAccessDeniedErr(err)
 }
 
 // WithExpectedErrs implements objstore.Bucket.

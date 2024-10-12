@@ -8,37 +8,39 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/grafana/loki/clients/pkg/promtail/api"
-	"github.com/grafana/loki/clients/pkg/promtail/positions"
-	"github.com/grafana/loki/clients/pkg/promtail/scrapeconfig"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/cloudflare"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/docker"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/file"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/gcplog"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/gelf"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/heroku"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/journal"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/kafka"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/lokipush"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/stdin"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/syslog"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/target"
-	"github.com/grafana/loki/clients/pkg/promtail/targets/windows"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/api"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/limit"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/positions"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/scrapeconfig"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/azureeventhubs"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/cloudflare"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/docker"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/file"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/gcplog"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/gelf"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/heroku"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/journal"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/kafka"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/lokipush"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/stdin"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/syslog"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/target"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/targets/windows"
 )
 
 const (
-	FileScrapeConfigs    = "fileScrapeConfigs"
-	JournalScrapeConfigs = "journalScrapeConfigs"
-	SyslogScrapeConfigs  = "syslogScrapeConfigs"
-	GcplogScrapeConfigs  = "gcplogScrapeConfigs"
-	PushScrapeConfigs    = "pushScrapeConfigs"
-	WindowsEventsConfigs = "windowsEventsConfigs"
-	KafkaConfigs         = "kafkaConfigs"
-	GelfConfigs          = "gelfConfigs"
-	CloudflareConfigs    = "cloudflareConfigs"
-	DockerConfigs        = "dockerConfigs"
-	DockerSDConfigs      = "dockerSDConfigs"
-	HerokuDrainConfigs   = "herokuDrainConfigs"
+	FileScrapeConfigs           = "fileScrapeConfigs"
+	JournalScrapeConfigs        = "journalScrapeConfigs"
+	SyslogScrapeConfigs         = "syslogScrapeConfigs"
+	GcplogScrapeConfigs         = "gcplogScrapeConfigs"
+	PushScrapeConfigs           = "pushScrapeConfigs"
+	WindowsEventsConfigs        = "windowsEventsConfigs"
+	KafkaConfigs                = "kafkaConfigs"
+	GelfConfigs                 = "gelfConfigs"
+	CloudflareConfigs           = "cloudflareConfigs"
+	DockerSDConfigs             = "dockerSDConfigs"
+	HerokuDrainConfigs          = "herokuDrainConfigs"
+	AzureEventHubsScrapeConfigs = "azureeventhubsScrapeConfigs"
 )
 
 var (
@@ -74,6 +76,8 @@ func NewTargetManagers(
 	client api.EntryHandler,
 	scrapeConfigs []scrapeconfig.Config,
 	targetConfig *file.Config,
+	watchConfig file.WatchConfig,
+	limitsConfig *limit.Config,
 ) (*TargetManagers, error) {
 	if targetConfig.Stdin {
 		level.Debug(logger).Log("msg", "configured to read from stdin")
@@ -103,6 +107,8 @@ func NewTargetManagers(
 			targetScrapeConfigs[WindowsEventsConfigs] = append(targetScrapeConfigs[WindowsEventsConfigs], cfg)
 		case cfg.KafkaConfig != nil:
 			targetScrapeConfigs[KafkaConfigs] = append(targetScrapeConfigs[KafkaConfigs], cfg)
+		case cfg.AzureEventHubsConfig != nil:
+			targetScrapeConfigs[AzureEventHubsScrapeConfigs] = append(targetScrapeConfigs[AzureEventHubsScrapeConfigs], cfg)
 		case cfg.GelfConfig != nil:
 			targetScrapeConfigs[GelfConfigs] = append(targetScrapeConfigs[GelfConfigs], cfg)
 		case cfg.CloudflareConfig != nil:
@@ -145,7 +151,7 @@ func NewTargetManagers(
 	if len(targetScrapeConfigs[CloudflareConfigs]) > 0 && cloudflareMetrics == nil {
 		cloudflareMetrics = cloudflare.NewMetrics(reg)
 	}
-	if (len(targetScrapeConfigs[DockerConfigs]) > 0 || len(targetScrapeConfigs[DockerSDConfigs]) > 0) && dockerMetrics == nil {
+	if (len(targetScrapeConfigs[DockerSDConfigs]) > 0) && dockerMetrics == nil {
 		dockerMetrics = docker.NewMetrics(reg)
 	}
 	if len(targetScrapeConfigs[JournalScrapeConfigs]) > 0 && journalMetrics == nil {
@@ -169,6 +175,7 @@ func NewTargetManagers(
 				client,
 				scrapeConfigs,
 				targetConfig,
+				watchConfig,
 			)
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to make file target manager")
@@ -209,7 +216,7 @@ func NewTargetManagers(
 				scrapeConfigs,
 			)
 			if err != nil {
-				return nil, errors.Wrap(err, "failed to make syslog target manager")
+				return nil, errors.Wrap(err, "failed to make gcplog target manager")
 			}
 			targetManagers = append(targetManagers, pubsubTargetManager)
 		case PushScrapeConfigs:
@@ -241,6 +248,12 @@ func NewTargetManagers(
 				return nil, errors.Wrap(err, "failed to make kafka target manager")
 			}
 			targetManagers = append(targetManagers, kafkaTargetManager)
+		case AzureEventHubsScrapeConfigs:
+			azureEventHubsTargetManager, err := azureeventhubs.NewTargetManager(reg, logger, client, scrapeConfigs)
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to make Azure Event Hubs target manager")
+			}
+			targetManagers = append(targetManagers, azureEventHubsTargetManager)
 		case GelfConfigs:
 			gelfTargetManager, err := gelf.NewTargetManager(gelfMetrics, logger, client, scrapeConfigs)
 			if err != nil {
@@ -257,22 +270,12 @@ func NewTargetManagers(
 				return nil, errors.Wrap(err, "failed to make cloudflare target manager")
 			}
 			targetManagers = append(targetManagers, cfTargetManager)
-		case DockerConfigs:
-			pos, err := getPositionFile()
-			if err != nil {
-				return nil, err
-			}
-			cfTargetManager, err := docker.NewTargetManager(dockerMetrics, logger, pos, client, scrapeConfigs)
-			if err != nil {
-				return nil, errors.Wrap(err, "failed to make Docker target manager")
-			}
-			targetManagers = append(targetManagers, cfTargetManager)
 		case DockerSDConfigs:
 			pos, err := getPositionFile()
 			if err != nil {
 				return nil, err
 			}
-			cfTargetManager, err := docker.NewTargetManager(dockerMetrics, logger, pos, client, scrapeConfigs)
+			cfTargetManager, err := docker.NewTargetManager(dockerMetrics, logger, pos, client, scrapeConfigs, limitsConfig.MaxLineSize.Val())
 			if err != nil {
 				return nil, errors.Wrap(err, "failed to make Docker service discovery target manager")
 			}

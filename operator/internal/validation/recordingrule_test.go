@@ -4,14 +4,14 @@ import (
 	"context"
 	"testing"
 
-	lokiv1 "github.com/grafana/loki/operator/apis/loki/v1"
-	"github.com/grafana/loki/operator/internal/validation"
-
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+
+	lokiv1 "github.com/grafana/loki/operator/apis/loki/v1"
+	"github.com/grafana/loki/operator/internal/validation"
 )
 
 var rtt = []struct {
@@ -73,7 +73,7 @@ var rtt = []struct {
 			"testing-rule",
 			field.ErrorList{
 				field.Invalid(
-					field.NewPath("Spec").Child("Groups").Index(1).Child("Name"),
+					field.NewPath("spec").Child("groups").Index(1).Child("name"),
 					"first",
 					lokiv1.ErrGroupNamesNotUnique.Error(),
 				),
@@ -95,7 +95,7 @@ var rtt = []struct {
 			"testing-rule",
 			field.ErrorList{
 				field.Invalid(
-					field.NewPath("Spec").Child("Groups").Index(0).Child("Interval"),
+					field.NewPath("spec").Child("groups").Index(0).Child("interval"),
 					"1mo",
 					lokiv1.ErrParseEvaluationInterval.Error(),
 				),
@@ -123,7 +123,7 @@ var rtt = []struct {
 			"testing-rule",
 			field.ErrorList{
 				field.Invalid(
-					field.NewPath("Spec").Child("Groups").Index(0).Child("Rules").Index(0).Child("Record"),
+					field.NewPath("spec").Child("groups").Index(0).Child("rules").Index(0).Child("record"),
 					"invalid&metric:name",
 					lokiv1.ErrInvalidRecordMetricName.Error(),
 				),
@@ -150,7 +150,7 @@ var rtt = []struct {
 			"testing-rule",
 			field.ErrorList{
 				field.Invalid(
-					field.NewPath("Spec").Child("Groups").Index(0).Child("Rules").Index(0).Child("Expr"),
+					field.NewPath("spec").Child("groups").Index(0).Child("rules").Index(0).Child("expr"),
 					"this is not a valid expression",
 					lokiv1.ErrParseLogQLExpression.Error(),
 				),
@@ -177,7 +177,7 @@ var rtt = []struct {
 			"testing-rule",
 			field.ErrorList{
 				field.Invalid(
-					field.NewPath("Spec").Child("Groups").Index(0).Child("Rules").Index(0).Child("Expr"),
+					field.NewPath("spec").Child("groups").Index(0).Child("rules").Index(0).Child("expr"),
 					`{message=~".+"}`,
 					lokiv1.ErrParseLogQLNotSample.Error(),
 				),
@@ -188,7 +188,6 @@ var rtt = []struct {
 
 func TestRecordingRuleValidationWebhook_ValidateCreate(t *testing.T) {
 	for _, tc := range rtt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -201,7 +200,7 @@ func TestRecordingRuleValidationWebhook_ValidateCreate(t *testing.T) {
 			}
 
 			v := &validation.RecordingRuleValidator{}
-			err := v.ValidateCreate(ctx, l)
+			_, err := v.ValidateCreate(ctx, l)
 			if err != nil {
 				require.Equal(t, tc.err, err)
 			} else {
@@ -213,7 +212,6 @@ func TestRecordingRuleValidationWebhook_ValidateCreate(t *testing.T) {
 
 func TestRecordingRuleValidationWebhook_ValidateUpdate(t *testing.T) {
 	for _, tc := range rtt {
-		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			t.Parallel()
 
@@ -226,7 +224,7 @@ func TestRecordingRuleValidationWebhook_ValidateUpdate(t *testing.T) {
 			}
 
 			v := &validation.RecordingRuleValidator{}
-			err := v.ValidateUpdate(ctx, &lokiv1.RecordingRule{}, l)
+			_, err := v.ValidateUpdate(ctx, &lokiv1.RecordingRule{}, l)
 			if err != nil {
 				require.Equal(t, tc.err, err)
 			} else {

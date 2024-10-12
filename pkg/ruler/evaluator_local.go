@@ -7,32 +7,28 @@ import (
 
 	"github.com/go-kit/log"
 
-	"github.com/grafana/loki/pkg/logproto"
-	"github.com/grafana/loki/pkg/logql"
-	"github.com/grafana/loki/pkg/logqlmodel"
+	"github.com/grafana/loki/v3/pkg/logproto"
+	"github.com/grafana/loki/v3/pkg/logql"
+	"github.com/grafana/loki/v3/pkg/logqlmodel"
 )
 
 const EvalModeLocal = "local"
 
 type LocalEvaluator struct {
-	cfg    *EvaluationConfig
 	engine *logql.Engine
 	logger log.Logger
 }
 
-func NewLocalEvaluator(cfg *EvaluationConfig, engine *logql.Engine, logger log.Logger) (*LocalEvaluator, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("given config is nil")
-	}
+func NewLocalEvaluator(engine *logql.Engine, logger log.Logger) (*LocalEvaluator, error) {
 	if engine == nil {
 		return nil, fmt.Errorf("given engine is nil")
 	}
 
-	return &LocalEvaluator{cfg: cfg, engine: engine, logger: logger}, nil
+	return &LocalEvaluator{engine: engine, logger: logger}, nil
 }
 
 func (l *LocalEvaluator) Eval(ctx context.Context, qs string, now time.Time) (*logqlmodel.Result, error) {
-	params := logql.NewLiteralParams(
+	params, err := logql.NewLiteralParams(
 		qs,
 		now,
 		now,
@@ -41,7 +37,11 @@ func (l *LocalEvaluator) Eval(ctx context.Context, qs string, now time.Time) (*l
 		logproto.FORWARD,
 		0,
 		nil,
+		nil,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	q := l.engine.Query(params)
 	res, err := q.Exec(ctx)

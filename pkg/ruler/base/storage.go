@@ -10,22 +10,23 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	promRules "github.com/prometheus/prometheus/rules"
 
-	configClient "github.com/grafana/loki/pkg/configs/client"
-	"github.com/grafana/loki/pkg/ruler/rulestore"
-	"github.com/grafana/loki/pkg/ruler/rulestore/bucketclient"
-	"github.com/grafana/loki/pkg/ruler/rulestore/configdb"
-	"github.com/grafana/loki/pkg/ruler/rulestore/local"
-	"github.com/grafana/loki/pkg/ruler/rulestore/objectclient"
-	"github.com/grafana/loki/pkg/storage"
-	"github.com/grafana/loki/pkg/storage/bucket"
-	"github.com/grafana/loki/pkg/storage/chunk/client"
-	"github.com/grafana/loki/pkg/storage/chunk/client/alibaba"
-	"github.com/grafana/loki/pkg/storage/chunk/client/aws"
-	"github.com/grafana/loki/pkg/storage/chunk/client/azure"
-	"github.com/grafana/loki/pkg/storage/chunk/client/baidubce"
-	"github.com/grafana/loki/pkg/storage/chunk/client/gcp"
-	"github.com/grafana/loki/pkg/storage/chunk/client/hedging"
-	"github.com/grafana/loki/pkg/storage/chunk/client/openstack"
+	configClient "github.com/grafana/loki/v3/pkg/configs/client"
+	"github.com/grafana/loki/v3/pkg/ruler/rulestore"
+	"github.com/grafana/loki/v3/pkg/ruler/rulestore/bucketclient"
+	"github.com/grafana/loki/v3/pkg/ruler/rulestore/configdb"
+	"github.com/grafana/loki/v3/pkg/ruler/rulestore/local"
+	"github.com/grafana/loki/v3/pkg/ruler/rulestore/objectclient"
+	"github.com/grafana/loki/v3/pkg/storage"
+	"github.com/grafana/loki/v3/pkg/storage/bucket"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/alibaba"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/aws"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/azure"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/baidubce"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/gcp"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/hedging"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/ibmcloud"
+	"github.com/grafana/loki/v3/pkg/storage/chunk/client/openstack"
 )
 
 // RuleStoreConfig configures a rule store.
@@ -40,6 +41,7 @@ type RuleStoreConfig struct {
 	S3           aws.S3Config              `yaml:"s3" doc:"description=Configures backend rule storage for S3."`
 	BOS          baidubce.BOSStorageConfig `yaml:"bos" doc:"description=Configures backend rule storage for Baidu Object Storage (BOS)."`
 	Swift        openstack.SwiftConfig     `yaml:"swift" doc:"description=Configures backend rule storage for Swift."`
+	COS          ibmcloud.COSConfig        `yaml:"cos" doc:"description=Configures backend rule storage for IBM Cloud Object Storage (COS)."`
 	Local        local.Config              `yaml:"local" doc:"description=Configures backend rule storage for a local file system directory."`
 
 	mock rulestore.RuleStore `yaml:"-"`
@@ -54,7 +56,8 @@ func (cfg *RuleStoreConfig) RegisterFlags(f *flag.FlagSet) {
 	cfg.Swift.RegisterFlagsWithPrefix("ruler.storage.", f)
 	cfg.Local.RegisterFlagsWithPrefix("ruler.storage.", f)
 	cfg.BOS.RegisterFlagsWithPrefix("ruler.storage.", f)
-	f.StringVar(&cfg.Type, "ruler.storage.type", "", "Method to use for backend rule storage (configdb, azure, gcs, s3, swift, local, bos)")
+	cfg.COS.RegisterFlagsWithPrefix("ruler.storage.", f)
+	f.StringVar(&cfg.Type, "ruler.storage.type", "", "Method to use for backend rule storage (configdb, azure, gcs, s3, swift, local, bos, cos)")
 }
 
 // Validate config and returns error on failure
@@ -102,6 +105,10 @@ func NewLegacyRuleStore(cfg RuleStoreConfig, hedgeCfg hedging.Config, clientMetr
 		client, err = baidubce.NewBOSObjectStorage(&cfg.BOS)
 	case "swift":
 		client, err = openstack.NewSwiftObjectClient(cfg.Swift, hedgeCfg)
+	case "cos":
+		client, err = ibmcloud.NewCOSObjectClient(cfg.COS, hedgeCfg)
+	case "alibabacloud":
+		client, err = alibaba.NewOssObjectClient(context.Background(), cfg.AlibabaCloud)
 	case "local":
 		return local.NewLocalRulesClient(cfg.Local, loader)
 	default:

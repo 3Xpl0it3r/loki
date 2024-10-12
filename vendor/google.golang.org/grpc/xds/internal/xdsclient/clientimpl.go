@@ -25,7 +25,7 @@ import (
 	"google.golang.org/grpc/internal/cache"
 	"google.golang.org/grpc/internal/grpclog"
 	"google.golang.org/grpc/internal/grpcsync"
-	"google.golang.org/grpc/xds/internal/xdsclient/bootstrap"
+	"google.golang.org/grpc/internal/xds/bootstrap"
 )
 
 var _ XDSClient = &clientImpl{}
@@ -37,7 +37,7 @@ type clientImpl struct {
 	config             *bootstrap.Config
 	logger             *grpclog.PrefixLogger
 	watchExpiryTimeout time.Duration
-	serializer         *callbackSerializer
+	serializer         *grpcsync.CallbackSerializer
 	serializerClose    func()
 	resourceTypes      *resourceTypeRegistry
 
@@ -68,11 +68,8 @@ func (c *clientImpl) BootstrapConfig() *bootstrap.Config {
 	return c.config
 }
 
-// Close closes the gRPC connection to the management server.
-//
-// TODO: ensure that all underlying transports are closed before this function
-// returns.
-func (c *clientImpl) Close() {
+// close closes the gRPC connection to the management server.
+func (c *clientImpl) close() {
 	if c.done.HasFired() {
 		return
 	}
@@ -88,5 +85,17 @@ func (c *clientImpl) Close() {
 	c.authorityMu.Unlock()
 	c.serializerClose()
 
+	for _, f := range c.config.XDSServer.Cleanups {
+		f()
+	}
+	for _, a := range c.config.Authorities {
+		if a.XDSServer == nil {
+			// The server for this authority is the top-level one, cleaned up above.
+			continue
+		}
+		for _, f := range a.XDSServer.Cleanups {
+			f()
+		}
+	}
 	c.logger.Infof("Shutdown")
 }

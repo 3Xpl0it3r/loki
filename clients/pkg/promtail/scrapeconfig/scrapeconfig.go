@@ -8,6 +8,7 @@ import (
 	"github.com/Shopify/sarama"
 	"github.com/grafana/dskit/flagext"
 
+	"github.com/grafana/dskit/server"
 	promconfig "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/discovery"
@@ -25,30 +26,37 @@ import (
 	"github.com/prometheus/prometheus/discovery/triton"
 	"github.com/prometheus/prometheus/discovery/zookeeper"
 	"github.com/prometheus/prometheus/model/relabel"
-	"github.com/weaveworks/common/server"
 
-	"github.com/grafana/loki/clients/pkg/logentry/stages"
-	"github.com/grafana/loki/clients/pkg/promtail/discovery/consulagent"
+	"github.com/grafana/loki/v3/clients/pkg/logentry/stages"
+	"github.com/grafana/loki/v3/clients/pkg/promtail/discovery/consulagent"
 )
 
 // Config describes a job to scrape.
 type Config struct {
-	JobName           string                     `mapstructure:"job_name,omitempty" yaml:"job_name,omitempty"`
-	PipelineStages    stages.PipelineStages      `mapstructure:"pipeline_stages,omitempty" yaml:"pipeline_stages,omitempty"`
-	JournalConfig     *JournalTargetConfig       `mapstructure:"journal,omitempty" yaml:"journal,omitempty"`
-	SyslogConfig      *SyslogTargetConfig        `mapstructure:"syslog,omitempty" yaml:"syslog,omitempty"`
-	GcplogConfig      *GcplogTargetConfig        `mapstructure:"gcplog,omitempty" yaml:"gcplog,omitempty"`
-	PushConfig        *PushTargetConfig          `mapstructure:"loki_push_api,omitempty" yaml:"loki_push_api,omitempty"`
-	WindowsConfig     *WindowsEventsTargetConfig `mapstructure:"windows_events,omitempty" yaml:"windows_events,omitempty"`
-	KafkaConfig       *KafkaTargetConfig         `mapstructure:"kafka,omitempty" yaml:"kafka,omitempty"`
-	GelfConfig        *GelfTargetConfig          `mapstructure:"gelf,omitempty" yaml:"gelf,omitempty"`
-	CloudflareConfig  *CloudflareConfig          `mapstructure:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
-	HerokuDrainConfig *HerokuDrainTargetConfig   `mapstructure:"heroku_drain,omitempty" yaml:"heroku_drain,omitempty"`
-	RelabelConfigs    []*relabel.Config          `mapstructure:"relabel_configs,omitempty" yaml:"relabel_configs,omitempty"`
+	JobName              string                      `mapstructure:"job_name,omitempty" yaml:"job_name,omitempty"`
+	PipelineStages       stages.PipelineStages       `mapstructure:"pipeline_stages,omitempty" yaml:"pipeline_stages,omitempty"`
+	JournalConfig        *JournalTargetConfig        `mapstructure:"journal,omitempty" yaml:"journal,omitempty"`
+	SyslogConfig         *SyslogTargetConfig         `mapstructure:"syslog,omitempty" yaml:"syslog,omitempty"`
+	GcplogConfig         *GcplogTargetConfig         `mapstructure:"gcplog,omitempty" yaml:"gcplog,omitempty"`
+	PushConfig           *PushTargetConfig           `mapstructure:"loki_push_api,omitempty" yaml:"loki_push_api,omitempty"`
+	WindowsConfig        *WindowsEventsTargetConfig  `mapstructure:"windows_events,omitempty" yaml:"windows_events,omitempty"`
+	KafkaConfig          *KafkaTargetConfig          `mapstructure:"kafka,omitempty" yaml:"kafka,omitempty"`
+	AzureEventHubsConfig *AzureEventHubsTargetConfig `mapstructure:"azure_event_hubs,omitempty" yaml:"azure_event_hubs,omitempty"`
+	GelfConfig           *GelfTargetConfig           `mapstructure:"gelf,omitempty" yaml:"gelf,omitempty"`
+	CloudflareConfig     *CloudflareConfig           `mapstructure:"cloudflare,omitempty" yaml:"cloudflare,omitempty"`
+	HerokuDrainConfig    *HerokuDrainTargetConfig    `mapstructure:"heroku_drain,omitempty" yaml:"heroku_drain,omitempty"`
+	RelabelConfigs       []*relabel.Config           `mapstructure:"relabel_configs,omitempty" yaml:"relabel_configs,omitempty"`
 	// List of Docker service discovery configurations.
 	DockerSDConfigs        []*moby.DockerSDConfig `mapstructure:"docker_sd_configs,omitempty" yaml:"docker_sd_configs,omitempty"`
 	ServiceDiscoveryConfig ServiceDiscoveryConfig `mapstructure:",squash" yaml:",inline"`
 	Encoding               string                 `mapstructure:"encoding,omitempty" yaml:"encoding,omitempty"`
+	DecompressionCfg       *DecompressionConfig   `yaml:"decompression,omitempty"`
+}
+
+type DecompressionConfig struct {
+	Enabled      bool
+	InitialDelay time.Duration `yaml:"initial_delay"`
+	Format       string
 }
 
 type ServiceDiscoveryConfig struct {
@@ -166,6 +174,15 @@ type JournalTargetConfig struct {
 	Matches string `yaml:"matches"`
 }
 
+type SyslogFormat string
+
+const (
+	// A modern Syslog RFC
+	SyslogFormatRFC5424 = "rfc5424"
+	// A legacy Syslog RFC also known as BSD-syslog
+	SyslogFormatRFC3164 = "rfc3164"
+)
+
 // SyslogTargetConfig describes a scrape config that listens for log lines over syslog.
 type SyslogTargetConfig struct {
 	// ListenAddress is the address to listen on for syslog messages.
@@ -194,10 +211,18 @@ type SyslogTargetConfig struct {
 	// message should be pushed to Loki
 	UseRFC5424Message bool `yaml:"use_rfc5424_message"`
 
+	// Syslog format used at the target. Acceptable value is rfc5424 or rfc3164.
+	// Default is rfc5424.
+	SyslogFormat SyslogFormat `yaml:"syslog_format"`
+
 	// MaxMessageLength sets the maximum limit to the length of syslog messages
 	MaxMessageLength int `yaml:"max_message_length"`
 
 	TLSConfig promconfig.TLSConfig `yaml:"tls_config,omitempty"`
+}
+
+func (config SyslogTargetConfig) IsRFC3164Message() bool {
+	return config.SyslogFormat == SyslogFormatRFC3164
 }
 
 // WindowsEventsTargetConfig describes a scrape config that listen for windows event logs.
@@ -244,6 +269,30 @@ type WindowsEventsTargetConfig struct {
 
 	// Labels optionally holds labels to associate with each log line.
 	Labels model.LabelSet `yaml:"labels"`
+}
+
+type AzureEventHubsTargetConfig struct {
+	// Labels optionally holds labels to associate with each log line.
+	Labels model.LabelSet `yaml:"labels"`
+
+	// UseIncomingTimestamp sets the timestamp to the incoming messages
+	// timestamp if it's set.
+	UseIncomingTimestamp bool `yaml:"use_incoming_timestamp"`
+
+	// Event Hubs to consume (Required).
+	EventHubs []string `yaml:"event_hubs"`
+
+	// Event Hubs ConnectionString for authentication on Azure Cloud (Required).
+	ConnectionString string `yaml:"connection_string"`
+
+	// Event Hubs namespace host name (Required). Typically, it looks like <your-namespace>.servicebus.windows.net:9093.
+	FullyQualifiedNamespace string `yaml:"fully_qualified_namespace"`
+
+	// The consumer group id.
+	GroupID string `yaml:"group_id"`
+
+	// Ignore messages that doesn't match schema for Azure resource logs
+	DisallowCustomMessages bool `yaml:"disallow_custom_messages"`
 }
 
 type KafkaTargetConfig struct {
@@ -347,7 +396,10 @@ type CloudflareConfig struct {
 	// - minimal
 	// - extended
 	// - all
+	// - custom
 	FieldsType string `yaml:"fields_type"`
+	// The additional list of fields to supplement those provided via fields_type.
+	AdditionalFields []string `yaml:"additional_fields"`
 }
 
 // GcplogTargetConfig describes a scrape config to pull logs from any pubsub topic.
@@ -375,6 +427,10 @@ type GcplogTargetConfig struct {
 
 	// Server is the weaveworks server config for listening connections. Used just for `push` subscription type.
 	Server server.Config `yaml:"server"`
+
+	// UseFullLine force Promtail to send the full line from Cloud Logging even if `textPayload` is available.
+	// By default, if `textPayload` is present in the line, then it's used as log line.
+	UseFullLine bool `yaml:"use_full_line"`
 }
 
 // HerokuDrainTargetConfig describes a scrape config to listen and consume heroku logs, in the HTTPS drain manner.
